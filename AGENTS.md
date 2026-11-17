@@ -25,8 +25,9 @@
 
 | 模块 | 路径 | 职责 | 关键文件 |
 |------|------|------|----------|
-| WebView 前端 | ui/ | 主窗口页面、样式 token 范式；M1 起承载 JS 解析器 | ui/index.html、ui/AGENTS.md |
-| Rust 主进程 | src-tauri/ | 应用壳：组装层 run()、窗口/打包配置；M2 起挂 engine 等模块 | src-tauri/src/lib.rs、tauri.conf.json、src-tauri/AGENTS.md |
+| WebView 前端 | ui/ | 页面 + 六解析器移植（zip/axml/arsc/pkgname/apk + 基建） | ui/core/apk.js、ui/AGENTS.md |
+| Rust 主进程 | src-tauri/ | 应用壳：组装层 run()、只读 fs 桥、统一错误类型 | src-tauri/src/lib.rs、fsbridge.rs、src-tauri/AGENTS.md |
+| 验收工具 | tools/ | M1 parity 回归（上游 vs 移植逐字段对比） | tools/m1-parity/parity.mjs |
 
 <!-- 每接入新模块加一行（模块内文件增删改名更新对应 L2），上游参考仓库 upstream/ 不入图谱。 -->
 
@@ -47,7 +48,7 @@
 - 明确不做：Windows 版（上游已有）、SwiftUI/AppKit 全重写、自造 agent 协议（统一 MCP）、iOS 侧任何功能
 
 ### Rust
-- 生产代码路径禁止 unwrap() / expect()；错误用本项目统一错误类型（类型建好后登记到这里）
+- 生产代码路径禁止 unwrap() / expect()；错误用本项目统一错误类型 `AppError`（src-tauri/src/error.rs，命令层经 Display 转 String 回传）
 - 日志一律走 tracing，禁止散落 println! / dbg!
 - 异步统一 tokio；外部进程（QEMU）必须处理优雅退出与僵尸回收
 

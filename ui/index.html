@@ -1,10 +1,10 @@
 <!DOCTYPE html>
 <!--
-  [WHY]: 应用主窗口占位页；M0 仅验证 Tauri 壳跑通，M1 起替换为真实安装界面。
-  [INPUT]: 样式与行为来自同目录 css/main.css、js/main.js，无外部依赖。
-  [OUTPUT]: 被 src-tauri/tauri.conf.json 的 build.frontendDist 引用，作为 WebView 初始加载页。
-  [BOUND]: 不引入框架/构建链；不做 APK 解析（解析器 M1 迁入后经 invoke 调用）。
-  [PROTOCOL]: 页面结构变化时同步更新 ui/AGENTS.md 成员清单。
+  [WHY]: 主窗口页面：M1 的「拖入 APK → 离线解析 → 展示名称/图标/ABI」流水线入口。
+  [INPUT]: 样式 css/main.css、行为 js/main.js（type=module，引 ui/core 解析链）。
+  [OUTPUT]: 被 src-tauri/tauri.conf.json 的 build.frontendDist 引用为初始加载页。
+  [BOUND]: 不做安装/启动（M2 起接入）；.apks/.xapk 拆分包按上游口径报错。
+  [PROTOCOL]: 页面结构变化时同步 ui/AGENTS.md 成员清单。
 -->
 <html lang="zh-CN">
 <head>
@@ -14,11 +14,48 @@
   <link rel="stylesheet" href="css/main.css">
 </head>
 <body>
-  <main class="placeholder">
-    <h1>ApkStart for Mac</h1>
-    <p>壳层已就绪（M0 脚手架）。</p>
-    <p>拖入 APK 安装的功能将在 M1 接入，投屏窗口在 M3 接入。</p>
+  <main class="page">
+    <header class="brand">
+      <h1>ApkStart for Mac</h1>
+      <p class="brand-sub">双击即装的安卓应用运行器 · M1 解析壳</p>
+    </header>
+
+    <section class="dropzone" id="dropzone" aria-label="拖入 APK 安装包">
+      <div class="dropzone-inner">
+        <span class="dropzone-icon">📦</span>
+        <p class="dropzone-title">把 APK 拖进来</p>
+        <p class="dropzone-hint">离线解析包名 / 应用名 / 图标 / ABI，不联网不上传</p>
+        <p class="dropzone-hint-weak">也支持命令行：apkstart-mac /path/to/app.apk</p>
+      </div>
+    </section>
+
+    <section class="card card-error" id="error-card" hidden>
+      <p class="error-title">解析失败</p>
+      <p class="error-message" id="error-message"></p>
+    </section>
+
+    <section class="card" id="result-card" hidden>
+      <div class="result-head">
+        <img class="app-icon" id="app-icon" alt="应用图标">
+        <div class="app-titles">
+          <p class="app-label" id="app-label"></p>
+          <p class="app-package" id="app-package"></p>
+        </div>
+      </div>
+      <dl class="meta-grid">
+        <dt>版本</dt><dd id="meta-version"></dd>
+        <dt>SDK</dt><dd id="meta-sdk"></dd>
+        <dt>启动 Activity</dt><dd id="meta-activity"></dd>
+        <dt>屏幕方向</dt><dd id="meta-orientation"></dd>
+        <dt>ABI</dt><dd id="meta-abis"></dd>
+        <dt>图标来源</dt><dd id="meta-icon-file"></dd>
+        <dt>文件大小</dt><dd id="meta-size"></dd>
+      </dl>
+      <p class="next-note">安装与投屏将在 M2/M3 接入，当前版本仅解析展示。</p>
+    </section>
+
+    <p class="status" id="status" hidden></p>
   </main>
-  <script src="js/main.js"></script>
+  <script type="module" src="js/main.js"></script>
 </body>
 </html>
