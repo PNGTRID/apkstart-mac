@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<!--
+  [WHY]: 应用主窗口占位页；M0 仅验证 Tauri 壳跑通，M1 起替换为真实安装界面。
+  [INPUT]: 样式与行为来自同目录 css/main.css、js/main.js，无外部依赖。
+  [OUTPUT]: 被 src-tauri/tauri.conf.json 的 build.frontendDist 引用，作为 WebView 初始加载页。
+  [BOUND]: 不引入框架/构建链；不做 APK 解析（解析器 M1 迁入后经 invoke 调用）。
+  [PROTOCOL]: 页面结构变化时同步更新 ui/AGENTS.md 成员清单。
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ApkStart for Mac</title>
+  <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+  <main class="placeholder">
+    <h1>ApkStart for Mac</h1>
+    <p>壳层已就绪（M0 脚手架）。</p>
+    <p>拖入 APK 安装的功能将在 M1 接入，投屏窗口在 M3 接入。</p>
+  </main>
+  <script src="js/main.js"></script>
+</body>
+</html>

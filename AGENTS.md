@@ -25,9 +25,10 @@
 
 | 模块 | 路径 | 职责 | 关键文件 |
 |------|------|------|----------|
-| 待补 | 待补 | 待补 | 待补 |
+| WebView 前端 | ui/ | 主窗口页面、样式 token 范式；M1 起承载 JS 解析器 | ui/index.html、ui/AGENTS.md |
+| Rust 主进程 | src-tauri/ | 应用壳：组装层 run()、窗口/打包配置；M2 起挂 engine 等模块 | src-tauri/src/lib.rs、tauri.conf.json、src-tauri/AGENTS.md |
 
-<!-- 项目尚无代码。M0 脚手架建成后必须补此表；每接入新模块加一行，文件增删改名同步更新。 -->
+<!-- 每接入新模块加一行（模块内文件增删改名更新对应 L2），上游参考仓库 upstream/ 不入图谱。 -->
 
 ## 3. 项目特有规范
 

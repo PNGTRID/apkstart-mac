@@ -1,0 +1,11 @@
+[package]
+name = "apkstart-mac"
+version = "0.1.0"
+description = "apkstart macOS 版：双击 APK 即装，应用以独立窗口运行"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

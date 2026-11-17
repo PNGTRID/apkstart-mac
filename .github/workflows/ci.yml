@@ -1,0 +1,29 @@
+# [WHY]: M0 起的持续验证——clippy + build 双绿灯才算交付（AGENTS.md §5）
+# 本项目只跑 macOS：上游明确不做 Windows/Linux，Linux 下 Tauri 还要装 webkit2gtk 系统依赖，得不偿失
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    name: clippy + build (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Build
+        run: cargo build --manifest-path src-tauri/Cargo.toml

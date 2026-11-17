@@ -1,0 +1,42 @@
+/* ===== apkstart-mac 全局样式 ===== */
+/* [WHY]: 占位页样式，同时确立样式 token 命名范式（--类型-名称-状态），后续页面沿用 */
+
+:root {
+  --color-bg: #f5f5f7;
+  --color-text: #1d1d1f;
+  --color-text-secondary: #6e6e73;
+  --color-primary: #0071e3;
+  --color-primary-hover: #0077ed;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+
+.placeholder {
+  text-align: center;
+}
+
+.placeholder h1 {
+  font-size: 28px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.placeholder p {
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 1.8;
+}
