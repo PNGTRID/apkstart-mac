@@ -121,3 +121,9 @@ pub fn apksys_argv_path() -> Result<Option<String>, String> {
             )
     }))
 }
+
+/// argv 开关探测（`--screen` 自动开投屏等测试/自动化钩子）
+#[tauri::command]
+pub fn apksys_argv_flag(name: String) -> Result<bool, String> {
+    Ok(std::env::args().skip(1).any(|a| a == name))
+}

@@ -12,7 +12,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use apkstart_mac::{doctor, dl, engine, layout};
+use apkstart_mac::{doctor, dl, engine, layout, scrcpy};
 
 fn print_probe(p: &doctor::Probe) {
     for line in p.summary() {
@@ -30,7 +30,7 @@ async fn main() {
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = args.first() else {
-        eprintln!("用法: m2ctl <probe|prepare|boot [--cold] [--timeout 秒]|stop|log>");
+        eprintln!("用法: m2ctl <probe|prepare|boot [--cold] [--timeout 秒]|stop|stream|selftest-stream|log>");
         std::process::exit(2);
     };
     let state = Arc::new(engine::EngineState::default());
@@ -96,6 +96,102 @@ async fn main() {
                 1
             }
         },
+        "stream" => {
+            // 投屏拉起后保持进程存活（Ctrl-C/kill 退出），WS 端口打在 stdout
+            let sc = Arc::new(scrcpy::ScrcpyState::default());
+            match scrcpy::start(&sc).await {
+                Ok(info) => {
+                    println!("STREAM OK ws://127.0.0.1:{} {}x{} {}", info.ws_port, info.width, info.height, info.codec);
+                    println!("按 Ctrl-C 结束");
+                    tokio::signal::ctrl_c().await.ok();
+                    let _ = scrcpy::stop(&sc).await;
+                    0
+                }
+                Err(e) => {
+                    eprintln!("投屏失败: {e}");
+                    1
+                }
+            }
+        }
+        "selftest-stream" => {
+            // 进程内全链路自检：起会话 → 自己当 WS 客户端 → 数二进制帧。
+            // 排除一切 shell/lsof/Node 变量，验收 Rust 管道本身。
+            let sc = Arc::new(scrcpy::ScrcpyState::default());
+            let info = match scrcpy::start(&sc).await {
+                Ok(i) => i,
+                Err(e) => {
+                    eprintln!("selftest: 会话启动失败: {e}");
+                    std::process::exit(1);
+                }
+            };
+            println!("会话就绪 ws://127.0.0.1:{} {}x{}", info.ws_port, info.width, info.height);
+            let sock = std::net::TcpStream::connect(("127.0.0.1", info.ws_port)).expect("连接 WS 失败");
+            sock.set_read_timeout(Some(std::time::Duration::from_secs(3))).expect("设置读超时失败");
+            let mut reader = sock.try_clone().expect("clone 失败");
+            use std::io::Read as _;
+            // 客户端侧握手：发升级请求，校验 101 与 Accept（key=固定样例）
+            {
+                use std::io::Write;
+                let mut s = &sock;
+                s.write_all(
+                    b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+                      Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+                )
+                .expect("写握手失败");
+                let mut resp = Vec::new();
+                let mut byte = [0u8; 1];
+                loop {
+                    reader.read_exact(&mut byte).expect("读握手响应失败");
+                    resp.push(byte[0]);
+                    if resp.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&resp);
+                assert!(text.starts_with("HTTP/1.1 101"), "握手响应异常: {text}");
+                assert!(
+                    text.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+                    "Accept 校验失败: {text}"
+                );
+            }
+            let mut ws = apkstart_mac::ws::WsConn::new(reader);
+            let (_, meta) = ws.read_frame().expect("读 meta 失败");
+            println!("meta: {}", String::from_utf8_lossy(&meta));
+            // 制造画面变化：滑动 + 快速滑动
+            engine::adb(&["shell", "input", "swipe", "360", "900", "360", "300", "200"]).await.ok();
+            let began = std::time::Instant::now();
+            let mut frames = 0usize;
+            let mut bytes = 0usize;
+            let mut binary_frames = 0usize;
+            while began.elapsed() < std::time::Duration::from_secs(7) {
+                match ws.read_frame() {
+                    Ok((opcode, payload)) => {
+                        frames += 1;
+                        bytes += payload.len();
+                        if opcode == 0x2 {
+                            binary_frames += 1;
+                        }
+                        if frames == 1 {
+                            println!("首帧: opcode={opcode} len={}", payload.len());
+                        }
+                        if frames.is_multiple_of(30) {
+                            // 持续制造变化
+                            engine::adb(&["shell", "input", "swipe", "360", "900", "360", "500", "150"]).await.ok();
+                        }
+                    }
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut {
+                            continue;
+                        }
+                        eprintln!("读帧错误: {e}");
+                        break;
+                    }
+                }
+            }
+            println!("SELFTEST: 帧={frames} 二进制帧={binary_frames} 字节={bytes}");
+            let _ = scrcpy::stop(&sc).await;
+            if binary_frames >= 30 { 0 } else { 1 }
+        }
         "log" => {
             let path = layout::logs_dir().join("emulator.log");
             match std::fs::read_to_string(&path) {

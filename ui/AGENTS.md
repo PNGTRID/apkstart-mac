@@ -9,6 +9,7 @@
 | index.html | 主窗口页：APK 拖放区 + 解析结果卡 + 安卓运行时卡片 |
 | css/main.css | 全局样式与 token 命名范式 |
 | js/main.js | 页面行为：拖入/argv → 解析渲染；运行时探测/准备/启停与进度事件 |
+| js/screen.js | M3 投屏：WS 收 AnnexB → WebCodecs 解码 → canvas；鼠标/滚轮/按键注入 |
 | core/buf.js | Buffer 面 shim（Uint8Array 子类），上游解析器的字节读取依赖 |
 | core/apksys.js | fs 唯一出口：Tauri invoke 桥适配层，可注入 Node 实现做 parity |
 | core/inflate.js | DecompressionStream('deflate-raw') 封装，替代 Node zlib |

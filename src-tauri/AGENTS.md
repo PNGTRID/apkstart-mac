@@ -14,7 +14,10 @@
 | src/doctor.rs | 环境探测：磁盘/HVF/网络/三组件，中文结论行 |
 | src/dl.rs | 运行时下载器：分块并行 + 断点续传 + sha1 校验 + ditto 解压 |
 | src/engine.rs | 引擎：手写 AVD + emulator 托管（qemu 真身跟踪）+ emu kill 停机 |
-| src/bin/m2ctl.rs | 脚本化验收入口：probe/prepare/boot/stop（不经 GUI） |
+| src/scrcpy.rs | M3 投屏桥：scrcpy-server 托管 + WS 帧推送 + control 注入编码 |
+| src/ws.rs | 最小 WebSocket 服务端（单客户端、本机、无压缩），帧读写 |
+| src/util.rs | SHA-1 + base64（WS 握手用，带测试向量） |
+| src/bin/m2ctl.rs | 脚本化验收入口：probe/prepare/boot/stop/stream/selftest-stream |
 | tauri.conf.json | 窗口、CSP、打包与图标配置（withGlobalTauri 已开） |
 | build.rs | tauri-build 构建钩子 |
 | icons/ | 应用图标（`cargo tauri icon` 生成；M4 换正式图标） |

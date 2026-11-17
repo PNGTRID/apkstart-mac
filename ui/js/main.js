@@ -6,6 +6,7 @@
  * [PROTOCOL]: 新增交互组件时同步 ui/AGENTS.md 与 index.html 的结构。
  */
 import { parseApk } from '../core/apk.js';
+import { initScreen } from './screen.js';
 
 const els = {
   dropzone: document.getElementById('dropzone'),
@@ -124,6 +125,7 @@ const rt = {
   btnLog: document.getElementById('btn-log'),
   engineStatus: document.getElementById('engine-status'),
   engineLog: document.getElementById('engine-log'),
+  btnScreen: document.getElementById('btn-screen'),
 };
 
 const invoke = window.__TAURI__.core.invoke;
@@ -157,6 +159,7 @@ function renderEngine(s) {
   rt.engineStatus.textContent = `状态：${s.phase}${text ? ` — ${text}` : ''}${s.pid ? `（pid ${s.pid}）` : ''}`;
   rt.btnStart.disabled = s.phase !== 'ready';
   rt.btnStop.disabled = s.phase !== 'booting' && s.phase !== 'booted';
+  rt.btnScreen.disabled = s.phase !== 'booting' && s.phase !== 'booted';
   if (s.phase === 'booted') rt.dlWrap.hidden = true;
 }
 
@@ -197,6 +200,7 @@ function initRuntime() {
     }
   });
   window.__TAURI__.event.listen('dl-progress', onDlProgress);
+  initScreen();
   doProbe();
   // 状态轮询：唯一状态来源（Rust 侧轮询即回收点）
   setInterval(async () => {

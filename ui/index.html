@@ -70,10 +70,23 @@
         <button class="btn btn-primary" id="btn-prepare">准备运行时</button>
         <button class="btn btn-primary" id="btn-start" disabled>启动安卓</button>
         <button class="btn" id="btn-stop" disabled>停止</button>
+        <button class="btn btn-primary" id="btn-screen" disabled>投屏</button>
         <button class="btn btn-ghost" id="btn-log">日志</button>
       </div>
       <p class="engine-status" id="engine-status"></p>
       <pre class="engine-log" id="engine-log" hidden></pre>
+    </section>
+
+    <section class="card screen-card" id="screen-card" hidden>
+      <div class="screen-head">
+        <p class="section-title">投屏</p>
+        <span class="chip" id="fps-chip">0 fps</span>
+        <button class="btn btn-ghost" id="btn-screen-stop">断开投屏</button>
+      </div>
+      <div class="screen-wrap">
+        <canvas id="screen" width="720" height="1280"></canvas>
+      </div>
+      <p class="screen-hint">鼠标点击/拖动 = 触摸，滚轮 = 滑动；键盘 Del/Esc/方向键已映射</p>
     </section>
   </main>
   <script type="module" src="js/main.js"></script>

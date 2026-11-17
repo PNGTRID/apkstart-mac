@@ -7,7 +7,7 @@
 
 ## 状态
 
-M2 运行时引擎完成（2026-11-17）：自动下载运行时（platform-tools/emulator/android-35 镜像，2.2GB 分块断点续传）→ 手写 AVD → headless 冷启 12~15s → adb 可用（Android 15 / arm64 / Play 商店在列）；环境探测、进度条与启停已接入界面。下一步 M3 投屏窗口层（风险大头）。
+M3 投屏核心完成（2026-11-17）：scrcpy v2.4 协议接入（探针实测字节流）→ Rust WS 桥 → WebCodecs 解码渲染；鼠标/滚轮/按键注入走 control socket。进程内自检实测 148~240 帧/7s（≈34fps 峰值）。多窗 freeform、窗口记忆尺寸、全屏属 M3 第二批。
 
 ## 文档导读
 

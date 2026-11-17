@@ -12,6 +12,9 @@ pub mod engine;
 pub mod error;
 pub mod fsbridge;
 pub mod layout;
+pub mod scrcpy;
+pub mod util;
+pub mod ws;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -116,6 +119,16 @@ async fn engine_log_tail() -> Result<String, String> {
     Ok(text)
 }
 
+#[tauri::command]
+async fn scrcpy_start(state: tauri::State<'_, Arc<scrcpy::ScrcpyState>>) -> Result<scrcpy::ScrcpyInfo, String> {
+    scrcpy::start(&state).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn scrcpy_stop(state: tauri::State<'_, Arc<scrcpy::ScrcpyState>>) -> Result<(), String> {
+    scrcpy::stop(&state).await.map_err(|e| e.to_string())
+}
+
 /// 组装 Tauri 应用并进入事件循环；窗口与安全配置见 tauri.conf.json。
 pub fn run() -> Result<(), tauri::Error> {
     tracing_subscriber::fmt()
@@ -127,6 +140,7 @@ pub fn run() -> Result<(), tauri::Error> {
     let app = tauri::Builder::default()
         .manage(fsbridge::FsRegistry::default())
         .manage(Arc::new(EngineState::default()))
+        .manage(Arc::new(scrcpy::ScrcpyState::default()))
         .manage(PrepareGuard::default())
         .invoke_handler(tauri::generate_handler![
             fsbridge::apksys_stat,
@@ -134,12 +148,15 @@ pub fn run() -> Result<(), tauri::Error> {
             fsbridge::apksys_read_at,
             fsbridge::apksys_close,
             fsbridge::apksys_argv_path,
+            fsbridge::apksys_argv_flag,
             doctor_probe,
             engine_prepare,
             engine_start,
             engine_status,
             engine_stop,
             engine_log_tail,
+            scrcpy_start,
+            scrcpy_stop,
         ])
         .build(tauri::generate_context!())?;
     app.run(|app, event| {
