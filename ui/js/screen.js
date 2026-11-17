@@ -317,9 +317,7 @@ export function initScreenWindow() {
   });
   startScreen();
   setInterval(() => {
-    if (active && configured && decoder.state === 'configured') {
-      setChip(`${frameCount} fps`);
-      frameCount = 0;
-    }
+    // 累计帧数显示：scrcpy 画面静止时不发帧，瞬时 fps 会归零造成「故障」误读
+    if (active && configured) setChip(`已渲染 ${frameCount} 帧`);
   }, 1000);
 }

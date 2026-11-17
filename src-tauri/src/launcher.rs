@@ -169,8 +169,9 @@ pub async fn generate_wrapper(meta: &WrapperMeta) -> Result<String, AppError> {
         .clone()
         .map(PathBuf::from)
         .unwrap_or_else(|| exe_path.clone());
+    // 调试期：包装器启动的主程序日志重定向到 /tmp（M6 打磨移除或改轮转）
     let script = format!(
-        "#!/bin/bash\nexec \"{}\" --launch \"{}\"\n",
+        "#!/bin/bash\nexec \"{}\" --launch \"{}\" >> /tmp/apkstart-wrapper.log 2>&1\n",
         exe.to_string_lossy(),
         meta.package
     );
