@@ -1,11 +1,13 @@
 /**
- * [WHY]: M3 投屏前端：WS 收 H.264 AnnexB → WebCodecs 解码 → canvas 渲染；
- *        鼠标/滚轮/按键 → WS 文本 → Rust → scrcpy control 注入。
- * [INPUT]: scrcpy_start 返回的 ws_port；Rust 帧格式 [8B pts][AnnexB]（config
- *          包 pts 最高位为 1，且永远是第一帧）；control JSON 字段见 build 处。
- * [OUTPUT]: 无对外接口；由 main.js 调 initScreen() 挂接按钮。
- * [BOUND]: 键盘只映射导航/编辑常用键（中文 IME 属 M5）；单路流；不做窗口
- *          记忆尺寸（M3 后段）。Safari 若拒 AnnexB 解码，降级方案见 memory。
+ * [WHY]: 独立投屏窗口的逻辑（index.html?screen=1）：WS 收 H.264 AnnexB →
+ *        WebCodecs 解码 → canvas 渲染；鼠标/滚轮/按键注入；窗口行为
+ *        （尺寸记忆 / F11 全屏 / 关窗停会话）。
+ * [INPUT]: scrcpy_start(label) 返回的 ws_port；Rust 帧格式 [8B pts][AnnexB]
+ *          （config 包 pts 最高位为 1，且永远是第一帧）；主窗口写入的
+ *          localStorage 尺寸记忆（screen-win-size）。
+ * [OUTPUT]: 无对外接口；窗口关闭即停对应会话（label=main，M3 单投屏窗）。
+ * [BOUND]: 键盘只映射导航/编辑常用键（中文 IME 属 M5）；单窗单会话；
+ *          Safari 若拒 AnnexB 解码，降级方案见 memory。
  * [PROTOCOL]: Rust 帧格式或 control JSON 字段变化必须同步本文件。
  */
 
@@ -13,11 +15,12 @@ const els = {
   card: document.getElementById('screen-card'),
   canvas: document.getElementById('screen'),
   fps: document.getElementById('fps-chip'),
-  btnScreen: document.getElementById('btn-screen'),
   btnStop: document.getElementById('btn-screen-stop'),
 };
 
 const ctx = els.canvas.getContext('2d');
+const SESSION_LABEL = 'main';
+const SIZE_KEY = 'screen-win-size';
 let ws = null;
 let decoder = null;
 let configured = false;
@@ -28,6 +31,10 @@ const ANDROID_KEYS = {
   Backspace: 67, Delete: 112, Enter: 66, Tab: 61, Escape: 4, Home: 3,
   ArrowUp: 19, ArrowDown: 20, ArrowLeft: 21, ArrowRight: 22,
 };
+
+function setChip(text) {
+  els.fps.textContent = text;
+}
 
 /** 从 AnnexB 找第一个 SPS（NAL type 7），还原 WebCodecs codec 字符串 */
 function codecFromSps(data) {
@@ -69,15 +76,13 @@ function ensureDecoder(codec) {
   if (configured) return;
   decoder = new VideoDecoder({
     output: handleFrame,
-    error: (e) => { els.fps.textContent = `解码错误：${e.message}`; },
+    error: (e) => setChip(`解码错误：${e.message}`),
   });
   decoder.configure({ codec, optimizeForLatency: true });
   configured = true;
 }
 
 function onBinary(buf) {
-  frameCount += 1;
-  if (frameCount === 1) els.fps.textContent = '已收到首帧，配置解码器…';
   if (!configured) return;
   const view = new DataView(buf);
   const pts = view.getBigUint64(0);
@@ -95,7 +100,7 @@ function onBinary(buf) {
       timestamp: ts,
     }));
   } catch (e) {
-    els.fps.textContent = `解码异常：${e.message}`;
+    setChip(`解码异常：${e.message}`);
   }
 }
 
@@ -136,7 +141,15 @@ function bindPointer() {
 }
 
 function bindKeys() {
+  const tauri = window.__TAURI__;
   const handler = (action) => (e) => {
+    // F11 全屏切换（铺满高度居中不变形，由 CSS flex 保证）
+    if (e.key === 'F11') {
+      e.preventDefault();
+      const win = tauri.window.getCurrentWebviewWindow();
+      win.isFullscreen().then((fs) => win.setFullscreen(!fs));
+      return;
+    }
     if (els.card.hidden || !ANDROID_KEYS[e.code]) return;
     e.preventDefault();
     sendInput({ t: 'key', action, code: ANDROID_KEYS[e.code] });
@@ -145,14 +158,56 @@ function bindKeys() {
   window.addEventListener('keyup', handler(1));
 }
 
+/** 尺寸记忆：恢复在窗口启动时由主窗口创建参数完成；此处只负责保存 */
+function bindSizeMemory() {
+  const tauri = window.__TAURI__;
+  const win = tauri.window.getCurrentWebviewWindow();
+  let timer = null;
+  win.onResized(async () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const size = await win.innerSize();
+      // 物理像素存取，恢复时同样用物理尺寸，避免缩放系数换算误差
+      localStorage.setItem(SIZE_KEY, JSON.stringify({ w: size.width, h: size.height, physical: true }));
+    }, 400);
+  });
+}
+
+async function restoreSize() {
+  const tauri = window.__TAURI__;
+  const win = tauri.window.getCurrentWebviewWindow();
+  try {
+    const saved = JSON.parse(localStorage.getItem(SIZE_KEY) ?? 'null');
+    if (saved?.w && saved?.h) {
+      const size = saved.physical
+        ? new tauri.dpi.PhysicalSize(saved.w, saved.h)
+        : new tauri.dpi.LogicalSize(saved.w, saved.h);
+      await win.setSize(size);
+    }
+  } catch (_) { /* 脏数据当无记忆 */ }
+}
+
+/** 关窗即停会话：onCloseRequested 里先 scrcpy_stop 再放行 */
+async function bindClose() {
+  const tauri = window.__TAURI__;
+  const win = tauri.window.getCurrentWebviewWindow();
+  await win.onCloseRequested(async () => {
+    try { await tauri.core.invoke('scrcpy_stop', { label: SESSION_LABEL }); } catch (_) { /* 幂等 */ }
+  });
+  els.btnStop.addEventListener('click', async () => {
+    try { await tauri.core.invoke('scrcpy_stop', { label: SESSION_LABEL }); } catch (_) { /* 幂等 */ }
+    win.close();
+  });
+}
+
 async function startScreen() {
   if (active) return;
   active = true;
   let info;
   try {
-    info = await window.__TAURI__.core.invoke('scrcpy_start');
+    info = await window.__TAURI__.core.invoke('scrcpy_start', { label: SESSION_LABEL });
   } catch (e) {
-    els.fps.textContent = `投屏失败：${e}`;
+    setChip(`投屏失败：${e}`);
     active = false;
     return;
   }
@@ -160,47 +215,37 @@ async function startScreen() {
   els.card.dataset.vh = info.height;
   els.canvas.width = info.width;
   els.canvas.height = info.height;
-  els.card.hidden = false;
   configured = false;
-  els.fps.textContent = '连接中…';
-  els.card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  setChip('连接中…');
 
   ws = new WebSocket(`ws://127.0.0.1:${info.ws_port}`);
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => { els.fps.textContent = 'WS 已连'; };
+  ws.onopen = () => setChip('WS 已连');
   ws.onmessage = (ev) => {
     if (ev.data instanceof ArrayBuffer) onBinary(ev.data);
   };
-  ws.onerror = () => { els.fps.textContent = 'WS 错误'; };
+  ws.onerror = () => setChip('WS 错误');
   ws.onclose = () => {
-    els.fps.textContent = '投屏已断开';
+    setChip('投屏已断开');
     active = false;
   };
 }
 
-export function initScreen() {
-  els.btnScreen.addEventListener('click', () => startScreen());
-  // 自动化钩子：`apkstart-mac --screen` 启动时直接开投屏并置顶窗口（截图验收用）
-  window.__TAURI__.core.invoke('apksys_argv_flag', { name: '--screen' })
-    .then((on) => {
-      if (on) {
-        window.__TAURI__.window.getCurrentWindow().setAlwaysOnTop(true).catch(() => {});
-        startScreen();
-      }
-    })
-    .catch(() => { /* 非 Tauri 环境忽略 */ });
-  els.btnStop.addEventListener('click', async () => {
-    try { await window.__TAURI__.core.invoke('scrcpy_stop'); } catch (_) { /* 幂等 */ }
-    if (ws) ws.close();
-    ws = null;
-    active = false;
-    els.card.hidden = true;
-  });
+export function initScreenWindow() {
+  const tauri = window.__TAURI__;
+  bindClose();
   bindPointer();
   bindKeys();
+  bindSizeMemory();
+  restoreSize();
+  els.btnStop.addEventListener('click', async () => {
+    try { await tauri.core.invoke('scrcpy_stop', { label: SESSION_LABEL }); } catch (_) { /* 幂等 */ }
+    tauri.window.getCurrentWebviewWindow().close();
+  });
+  startScreen();
   setInterval(() => {
     if (active && configured && decoder.state === 'configured') {
-      els.fps.textContent = `${frameCount} fps`;
+      setChip(`${frameCount} fps`);
       frameCount = 0;
     }
   }, 1000);

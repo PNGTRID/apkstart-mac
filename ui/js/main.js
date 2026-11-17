@@ -1,12 +1,27 @@
 /**
- * [WHY]: M1 页面行为：接收 APK（拖入或 argv）→ 调解析链 → 渲染结果卡。
- * [INPUT]: ui/core/apk.js 的 parseApk；Tauri 全局 API（invoke、拖放事件）。
- * [OUTPUT]: 无对外接口；M2 安装流水线在此页面接入后扩展。
- * [BOUND]: 不调安装/启动命令；解析失败展示中文错误，不做静默重试。
+ * [WHY]: 页面入口分流：主窗口承载 APK 解析与运行时控制；?screen=1 的独立
+ *        窗口只跑投屏（screen.js）。
+ * [INPUT]: ui/core/apk.js 的 parseApk；ui/js/screen.js（投屏窗口逻辑）；
+ *          Tauri 全局 API（invoke、拖放事件、WebviewWindow）。
+ * [OUTPUT]: openScreenWindow() 创建/聚焦投屏窗口（label screen-main）。
+ * [BOUND]: 主窗口不内嵌投屏画布（roadmap 定版独立窗口）；解析失败展示中文
+ *          错误，不做静默重试。
  * [PROTOCOL]: 新增交互组件时同步 ui/AGENTS.md 与 index.html 的结构。
  */
 import { parseApk } from '../core/apk.js';
-import { initScreen } from './screen.js';
+import { initScreenWindow } from './screen.js';
+
+const SCREEN_ONLY = new URLSearchParams(location.search).get('screen') === '1';
+
+if (SCREEN_ONLY) {
+  document.body.classList.add('screen-window');
+  initScreenWindow();
+} else {
+  document.body.classList.add('main-window');
+  initMainWindow();
+}
+
+/* ===== 主窗口：APK 解析 ===== */
 
 const els = {
   dropzone: document.getElementById('dropzone'),
@@ -98,20 +113,7 @@ async function initDragDrop() {
   });
 }
 
-async function init() {
-  // M4 文件关联的预演入口：以 `apkstart-mac <apk绝对路径>` 启动时直接进解析
-  try {
-    const argPath = await window.__TAURI__.core.invoke('apksys_argv_path');
-    if (argPath) {
-      await parseAndShow(argPath);
-    } else {
-      await initDragDrop();
-    }
-  } catch (_) { /* argv 检查失败不阻塞拖放入口 */ }
-  initRuntime();
-}
-
-/* ===== 运行时卡片（M2） ===== */
+/* ===== 主窗口：运行时控制 ===== */
 
 const rt = {
   probeList: document.getElementById('probe-list'),
@@ -122,16 +124,13 @@ const rt = {
   btnPrepare: document.getElementById('btn-prepare'),
   btnStart: document.getElementById('btn-start'),
   btnStop: document.getElementById('btn-stop'),
+  btnScreen: document.getElementById('btn-screen'),
   btnLog: document.getElementById('btn-log'),
   engineStatus: document.getElementById('engine-status'),
   engineLog: document.getElementById('engine-log'),
-  btnScreen: document.getElementById('btn-screen'),
 };
 
-const invoke = window.__TAURI__.core.invoke;
-
 function renderProbe(probe) {
-  // probe.summary 由 Rust 序列化为 [{ok, text}] 数组
   rt.probeList.innerHTML = probe.summary
     .map((l) => `<li class="probe-line ${l.ok ? 'probe-line-ok' : 'probe-line-bad'}">${l.ok ? '✓' : '✗'} ${l.text}</li>`)
     .join('');
@@ -163,7 +162,29 @@ function renderEngine(s) {
   if (s.phase === 'booted') rt.dlWrap.hidden = true;
 }
 
-function initRuntime() {
+/** 打开（或聚焦）独立投屏窗口；尺寸记忆存 localStorage */
+function openScreenWindow() {
+  const { WebviewWindow } = window.__TAURI__.webview;
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem('screen-win-size') ?? 'null'); } catch (_) { /* 脏数据当无 */ }
+  const win = new WebviewWindow('screen-main', {
+    url: 'index.html?screen=1',
+    title: '投屏 - ApkStart',
+    width: saved?.w ?? 480,
+    height: saved?.h ?? 854,
+    center: !saved,
+    resizable: true,
+    minWidth: 270,
+    minHeight: 480,
+  });
+  // label 已存在时新实例创建失败：聚焦已有窗口即可
+  win.once('tauri://error', async () => {
+    const existing = await WebviewWindow.fromLabel('screen-main');
+    await existing?.setFocus();
+  });
+}
+
+function initMainWindow() {
   rt.btnProbe.addEventListener('click', doProbe);
   rt.btnPrepare.addEventListener('click', async () => {
     rt.btnPrepare.disabled = true;
@@ -192,6 +213,7 @@ function initRuntime() {
       rt.engineStatus.textContent = `停止失败：${e}`;
     }
   });
+  rt.btnScreen.addEventListener('click', openScreenWindow);
   rt.btnLog.addEventListener('click', async () => {
     rt.engineLog.hidden = !rt.engineLog.hidden;
     if (!rt.engineLog.hidden) {
@@ -200,12 +222,26 @@ function initRuntime() {
     }
   });
   window.__TAURI__.event.listen('dl-progress', onDlProgress);
-  initScreen();
   doProbe();
   // 状态轮询：唯一状态来源（Rust 侧轮询即回收点）
   setInterval(async () => {
     try { renderEngine(await invoke('engine_status')); } catch (_) { /* 未挂载时忽略 */ }
   }, 1500);
+
+  // M4 文件关联的预演入口：以 `apkstart-mac <apk绝对路径>` 启动时直接进解析
+  window.__TAURI__.core.invoke('apksys_argv_path')
+    .then((argPath) => {
+      if (argPath) return parseAndShow(argPath);
+      return initDragDrop();
+    })
+    .catch(() => initDragDrop());
+
+  // 自动化钩子：`apkstart-mac --screen` 启动时直接开投屏窗口
+  window.__TAURI__.core.invoke('apksys_argv_flag', { name: '--screen' })
+    .then((on) => { if (on) openScreenWindow(); })
+    .catch(() => { /* 忽略 */ });
 }
 
-init();
+const invoke = window.__TAURI__.core.invoke;
+
+initMainWindow();
