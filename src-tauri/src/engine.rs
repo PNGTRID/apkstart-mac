@@ -266,8 +266,19 @@ async fn pump_log(mut pipe: impl tokio::io::AsyncRead + Unpin, kind: &'static st
 /// 自动降级 swiftshader_indirect 一次。
 pub async fn start(state: &Arc<EngineState>, cold: bool) -> Result<EngineStatus, AppError> {
     let mut inner = state.inner.lock().await;
-    if pid_alive(inner.qemu_pid) {
-        return Err(AppError::Engine("引擎已在运行".into()));
+    // 复用孤儿 qemu：主程序退出后模拟器仍存活的场景，直接接管（不重开不冲突）
+    let orphan = find_qemu_pid().filter(|p| pid_alive(Some(*p)));
+    if pid_alive(inner.qemu_pid) || orphan.is_some() {
+        let pid = orphan.or(inner.qemu_pid);
+        inner.qemu_pid = pid;
+        let s = EngineStatus {
+            phase: Phase::Booting,
+            note: "检测到运行中的模拟器，直接复用".into(),
+            error: None,
+            pid,
+        };
+        inner.status = Some(s.clone());
+        return Ok(s);
     }
     if let Some(child) = inner.child.as_mut() {
         if child.try_wait()?.is_none() {
@@ -447,16 +458,14 @@ pub async fn mark_boot_failed(state: &EngineState, msg: &str) {
     }
 }
 
-/// 应用退出兜底（同步上下文）：qemu 还活着就 SIGTERM，让它存快照再走。
-/// 收不收尸无所谓——本进程马上结束，子进程由 launchd 接管直到自然退出。
-pub fn quit_sync(state: &EngineState) {
-    let Ok(inner) = state.inner.try_lock() else { return };
-    if inner.qemu_pid.is_none() && find_qemu_pid().is_none() {
+/// 应用退出兜底（同步上下文）：走 console emu kill 优雅停机。
+/// 切勿对 qemu 发 SIGTERM/SIGINT——emulator 的 gRPC 清理线程会竞态 abort
+/// （bad_function_call），表现为模拟器「随机崩溃」（M3c/M4 实测连环案）。
+pub fn quit_sync(_state: &EngineState) {
+    if find_qemu_pid().is_none() {
         return;
     }
-    let _ = std::process::Command::new("/usr/bin/pkill")
-        .arg("-TERM")
-        .arg("-f")
-        .arg(format!("qemu-system.*-avd {AVD_NAME}"))
+    let _ = std::process::Command::new(layout::adb_path())
+        .args(["shell", "emu", "kill"])
         .output();
 }

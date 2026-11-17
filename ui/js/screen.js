@@ -37,29 +37,83 @@ function setChip(text) {
 }
 
 /** 从 AnnexB 找第一个 SPS（NAL type 7），还原 WebCodecs codec 字符串 */
-function codecFromSps(data) {
+/** AnnexB → NAL 列表（视图，不含 start code）：{type, bytes} */
+function splitNals(data) {
+  const marks = [];
   let i = 0;
-  while (i < data.length - 7) {
-    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1 && (data[i + 3] & 0x1f) === 7) {
-      const hex = (v) => v.toString(16).padStart(2, '0');
-      return `avc1.${hex(data[i + 4])}${hex(data[i + 5])}${hex(data[i + 6])}`;
+  while (i < data.length - 3) {
+    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
+      let scStart = i;
+      if (i > 0 && data[i - 1] === 0) scStart = i - 1;
+      marks.push({ scStart, nalStart: i + 3 });
+      i += 3;
+    } else {
+      i += 1;
     }
-    i += 1;
   }
-  return null;
+  const nals = [];
+  for (let k = 0; k < marks.length; k += 1) {
+    const nalStart = marks[k].nalStart;
+    const nextSc = k + 1 < marks.length ? marks[k + 1].scStart : data.length;
+    let end = nextSc;
+    while (end > nalStart && data[end - 1] === 0) end -= 1; // 去 trailing zeros
+    if (end > nalStart) nals.push({ type: data[nalStart] & 0x1f, bytes: data.subarray(nalStart, end) });
+  }
+  return nals;
 }
 
-/** 帧分类：含 IDR(5) 或 SPS(7) 按关键帧喂 */
-function isKeyChunk(data) {
-  let i = 0;
-  while (i < data.length - 4) {
-    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
-      const t = data[i + 3] & 0x1f;
-      if (t === 5 || t === 7) return true;
-    }
-    i += 1;
+/** NAL 列表 → AVCC（4 字节大端长度前缀，WebCodecs description 模式要求） */
+function nalsToAvcv(nals) {
+  let total = 4 * nals.length;
+  for (const n of nals) total += n.bytes.length;
+  const out = new Uint8Array(total);
+  const dv = new DataView(out.buffer);
+  let o = 0;
+  for (const n of nals) {
+    dv.setUint32(o, n.bytes.length);
+    o += 4;
+    out.set(n.bytes, o);
+    o += n.bytes.length;
   }
-  return false;
+  return out;
+}
+
+/** SPS/PPS → avcC（AVCDecoderConfigurationRecord，作为 VideoDecoder description） */
+function buildAvcC(spsList, ppsList) {
+  let size = 7;
+  for (const n of spsList) size += 2 + n.bytes.length;
+  size += 1;
+  for (const n of ppsList) size += 2 + n.bytes.length;
+  const out = new Uint8Array(size);
+  const dv = new DataView(out.buffer);
+  let o = 0;
+  out[o] = 1; o += 1; // configurationVersion
+  out[o] = spsList[0].bytes[1]; o += 1; // profile
+  out[o] = spsList[0].bytes[2]; o += 1; // constraint flags
+  out[o] = spsList[0].bytes[3]; o += 1; // level
+  out[o] = 0xff; o += 1; // lengthSizeMinusOne = 3
+  out[o] = 0xe0 | spsList.length; o += 1; // numOfSPS（高 3 位 reserved）
+  for (const n of spsList) {
+    dv.setUint16(o, n.bytes.length); o += 2;
+    out.set(n.bytes, o); o += n.bytes.length;
+  }
+  out[o] = ppsList.length; o += 1;
+  for (const n of ppsList) {
+    dv.setUint16(o, n.bytes.length); o += 2;
+    out.set(n.bytes, o); o += n.bytes.length;
+  }
+  return out;
+}
+
+/** SPS NAL（不含 start code）→ WebCodecs codec 字符串 */
+function codecFromSpsNal(sps) {
+  const hex = (v) => v.toString(16).padStart(2, '0');
+  return `avc1.${hex(sps[1])}${hex(sps[2])}${hex(sps[3])}`;
+}
+
+/** 帧分类：含 IDR(5) 视为关键帧（参数集已在 description） */
+function isKeyChunk(nals) {
+  return nals.some((n) => n.type === 5);
 }
 
 function handleFrame(frame) {
@@ -72,35 +126,54 @@ function handleFrame(frame) {
   frame.close();
 }
 
-function ensureDecoder(codec) {
-  if (configured) return;
+function ensureDecoder(avcc, codec) {
   decoder = new VideoDecoder({
     output: handleFrame,
-    error: (e) => setChip(`解码错误：${e.message}`),
+    // 解码器内部错误回传日志（无头调试通道）
+    error: (e) => {
+      setChip(`解码错误：${e.message}`);
+      window.__TAURI__.core.invoke('frontend_log', { message: `VideoDecoder: ${e.message}` }).catch(() => {});
+    },
   });
-  decoder.configure({ codec, optimizeForLatency: true });
+  // AVCC + description：Safari/WebKit 的 H.264 标准输入格式（AnnexB 支持不可靠）
+  decoder.configure({ codec, description: avcc, optimizeForLatency: true });
   configured = true;
 }
 
+let chunkTs = 0; // 合成单调时间戳（µs）。scrcpy 的 pts 含超出 WebCodecs 上限的标记值
+// （实测 4.6e18 > 2^53），透传会让 EncodedVideoChunk 构造直接抛错、IDR 被拒，
+// 连锁导致后续全部 P 帧报 Key frame is required（黑屏根因，M3c 实测）。
+
 function onBinary(buf) {
-  if (!configured) return;
   const view = new DataView(buf);
   const pts = view.getBigUint64(0);
   const data = new Uint8Array(buf, 8);
   const isConfig = (pts & 0x8000000000000000n) !== 0n;
-  if (isConfig) {
-    ensureDecoder(codecFromSps(data) ?? 'avc1.640028');
+  const nals = splitNals(data);
+
+  if (!configured) {
+    // 只认参数集帧：从 SPS/PPS 构建 avcC 并配置解码器
+    if (!isConfig) return;
+    const sps = nals.filter((n) => n.type === 7);
+    const pps = nals.filter((n) => n.type === 8);
+    if (!sps.length || !pps.length) return;
+    const avcc = buildAvcC(sps, pps);
+    ensureDecoder(avcc, codecFromSpsNal(sps[0].bytes));
+    return; // 参数集已进 description，帧本身不喂
   }
+
   if (!decoder || decoder.state !== 'configured') return;
-  const ts = Number(pts & 0x7fffffffffffffffn);
+  chunkTs += 33333; // 30fps 基准的合成时间戳；WebCodecs 只要求单调
+  const avccData = nalsToAvcv(nals);
   try {
     decoder.decode(new EncodedVideoChunk({
-      type: isKeyChunk(data) ? 'key' : 'delta',
-      data,
-      timestamp: ts,
+      type: isKeyChunk(nals) ? 'key' : 'delta',
+      data: avccData,
+      timestamp: chunkTs,
     }));
   } catch (e) {
     setChip(`解码异常：${e.message}`);
+    window.__TAURI__.core.invoke('frontend_log', { message: `decode: ${e.message}` }).catch(() => {});
   }
 }
 
