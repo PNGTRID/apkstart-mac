@@ -120,13 +120,19 @@ async fn engine_log_tail() -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn scrcpy_start(state: tauri::State<'_, Arc<scrcpy::ScrcpyState>>) -> Result<scrcpy::ScrcpyInfo, String> {
-    scrcpy::start(&state).await.map_err(|e| e.to_string())
+async fn scrcpy_start(
+    label: String,
+    state: tauri::State<'_, Arc<scrcpy::ScrcpyState>>,
+) -> Result<scrcpy::ScrcpyInfo, String> {
+    scrcpy::start(&state, &label).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn scrcpy_stop(state: tauri::State<'_, Arc<scrcpy::ScrcpyState>>) -> Result<(), String> {
-    scrcpy::stop(&state).await.map_err(|e| e.to_string())
+async fn scrcpy_stop(
+    label: Option<String>,
+    state: tauri::State<'_, Arc<scrcpy::ScrcpyState>>,
+) -> Result<(), String> {
+    scrcpy::stop(&state, label.as_deref()).await.map_err(|e| e.to_string())
 }
 
 /// 组装 Tauri 应用并进入事件循环；窗口与安全配置见 tauri.conf.json。

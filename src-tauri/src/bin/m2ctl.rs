@@ -99,12 +99,12 @@ async fn main() {
         "stream" => {
             // 投屏拉起后保持进程存活（Ctrl-C/kill 退出），WS 端口打在 stdout
             let sc = Arc::new(scrcpy::ScrcpyState::default());
-            match scrcpy::start(&sc).await {
+            match scrcpy::start(&sc, "main").await {
                 Ok(info) => {
                     println!("STREAM OK ws://127.0.0.1:{} {}x{} {}", info.ws_port, info.width, info.height, info.codec);
                     println!("按 Ctrl-C 结束");
                     tokio::signal::ctrl_c().await.ok();
-                    let _ = scrcpy::stop(&sc).await;
+                    let _ = scrcpy::stop(&sc, None).await;
                     0
                 }
                 Err(e) => {
@@ -114,83 +114,102 @@ async fn main() {
             }
         }
         "selftest-stream" => {
-            // 进程内全链路自检：起会话 → 自己当 WS 客户端 → 数二进制帧。
-            // 排除一切 shell/lsof/Node 变量，验收 Rust 管道本身。
+            // 进程内全链路自检 + 多会话并发验证：probe-a / probe-b 两路独立流
+            // 各挂一个 WS 客户端数帧，互不干扰即 M3 多会话验收。
             let sc = Arc::new(scrcpy::ScrcpyState::default());
-            let info = match scrcpy::start(&sc).await {
+
+            async fn connect_client(
+                port: u16,
+            ) -> std::io::Result<apkstart_mac::ws::WsConn<tokio::net::TcpStream>> {
+                let sock = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+                sock.set_nodelay(true)?;
+                apkstart_mac::ws::WsConn::client_handshake(sock).await
+            }
+
+            async fn count_frames(
+                ws: &mut apkstart_mac::ws::WsConn<tokio::net::TcpStream>,
+                secs: u64,
+            ) -> (usize, usize) {
+                let began = std::time::Instant::now();
+                let mut n = 0usize;
+                let mut bytes = 0usize;
+                while began.elapsed() < std::time::Duration::from_secs(secs) {
+                    match tokio::time::timeout(std::time::Duration::from_secs(2), ws.read_frame()).await {
+                        Ok(Ok((opcode, payload))) => {
+                            if opcode == 0x2 {
+                                n += 1;
+                                bytes += payload.len();
+                            }
+                        }
+                        Ok(Err(_)) => break,
+                        Err(_) => {}
+                    }
+                }
+                (n, bytes)
+            }
+
+            let mut code = 0;
+            let info_a = match scrcpy::start(&sc, "probe-a").await {
                 Ok(i) => i,
                 Err(e) => {
-                    eprintln!("selftest: 会话启动失败: {e}");
+                    eprintln!("selftest: 会话 a 启动失败: {e}");
                     std::process::exit(1);
                 }
             };
-            println!("会话就绪 ws://127.0.0.1:{} {}x{}", info.ws_port, info.width, info.height);
-            let sock = std::net::TcpStream::connect(("127.0.0.1", info.ws_port)).expect("连接 WS 失败");
-            sock.set_read_timeout(Some(std::time::Duration::from_secs(3))).expect("设置读超时失败");
-            let mut reader = sock.try_clone().expect("clone 失败");
-            use std::io::Read as _;
-            // 客户端侧握手：发升级请求，校验 101 与 Accept（key=固定样例）
-            {
-                use std::io::Write;
-                let mut s = &sock;
-                s.write_all(
-                    b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
-                      Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
-                )
-                .expect("写握手失败");
-                let mut resp = Vec::new();
-                let mut byte = [0u8; 1];
-                loop {
-                    reader.read_exact(&mut byte).expect("读握手响应失败");
-                    resp.push(byte[0]);
-                    if resp.ends_with(b"\r\n\r\n") {
-                        break;
-                    }
+            eprintln!("会话 a: ws://127.0.0.1:{} {}x{}", info_a.ws_port, info_a.width, info_a.height);
+            let mut ws_a = connect_client(info_a.ws_port).await.expect("客户端 a 连接失败");
+            let _meta_a = tokio::time::timeout(std::time::Duration::from_secs(3), ws_a.read_frame()).await.expect("读 a meta 超时").expect("读 a meta 失败");
+
+            // 第二路会话（并发；设备侧可能受编码器限制，失败则只验单路）
+            let info_b = match scrcpy::start(&sc, "probe-b").await {
+                Ok(i) => {
+                    eprintln!("会话 b: ws://127.0.0.1:{} {}x{}", i.ws_port, i.width, i.height);
+                    Some(i)
                 }
-                let text = String::from_utf8_lossy(&resp);
-                assert!(text.starts_with("HTTP/1.1 101"), "握手响应异常: {text}");
-                assert!(
-                    text.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
-                    "Accept 校验失败: {text}"
-                );
+                Err(e) => {
+                    println!("会话 b 未起（并发受限，仅验单路）: {e}");
+                    None
+                }
+            };
+            let mut ws_b = match &info_b {
+                Some(i) => connect_client(i.ws_port).await.map(Some).unwrap_or_else(|e| {
+                    println!("客户端 b 连接失败: {e}");
+                    None
+                }),
+                None => None,
+            };
+            if ws_b.is_some() {
+                if let Some(ws) = ws_b.as_mut() {
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), ws.read_frame()).await;
+                }
             }
-            let mut ws = apkstart_mac::ws::WsConn::new(reader);
-            let (_, meta) = ws.read_frame().expect("读 meta 失败");
-            println!("meta: {}", String::from_utf8_lossy(&meta));
-            // 制造画面变化：滑动 + 快速滑动
+
+            // 制造画面变化并双路同时计数
             engine::adb(&["shell", "input", "swipe", "360", "900", "360", "300", "200"]).await.ok();
-            let began = std::time::Instant::now();
-            let mut frames = 0usize;
-            let mut bytes = 0usize;
-            let mut binary_frames = 0usize;
-            while began.elapsed() < std::time::Duration::from_secs(7) {
-                match ws.read_frame() {
-                    Ok((opcode, payload)) => {
-                        frames += 1;
-                        bytes += payload.len();
-                        if opcode == 0x2 {
-                            binary_frames += 1;
-                        }
-                        if frames == 1 {
-                            println!("首帧: opcode={opcode} len={}", payload.len());
-                        }
-                        if frames.is_multiple_of(30) {
-                            // 持续制造变化
-                            engine::adb(&["shell", "input", "swipe", "360", "900", "360", "500", "150"]).await.ok();
-                        }
-                    }
-                    Err(e) => {
-                        if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut {
-                            continue;
-                        }
-                        eprintln!("读帧错误: {e}");
-                        break;
-                    }
-                }
+            let jh_a = tokio::spawn(async move { count_frames(&mut ws_a, 6).await });
+            let jh_b = ws_b.map(|mut ws| {
+                tokio::spawn(async move { count_frames(&mut ws, 6).await })
+            });
+            // 期间持续制造画面变化
+            for _ in 0..5 {
+                tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+                engine::adb(&["shell", "input", "swipe", "360", "900", "360", "500", "150"]).await.ok();
             }
-            println!("SELFTEST: 帧={frames} 二进制帧={binary_frames} 字节={bytes}");
-            let _ = scrcpy::stop(&sc).await;
-            if binary_frames >= 30 { 0 } else { 1 }
+            let (a, b) = (jh_a.await.unwrap_or((0, 0)), match jh_b {
+                Some(j) => j.await.unwrap_or((0, 0)),
+                None => (0, 0),
+            });
+            eprintln!("SELFTEST: 路 a 帧={} 字节={}；路 b 帧={} 字节={}", a.0, a.1, b.0, b.1);
+            let _ = scrcpy::stop(&sc, None).await;
+            if a.0 >= 30 && info_b.is_some() && b.0 >= 30 {
+                eprintln!("多会话 PASS：两路流互不干扰");
+            } else if a.0 >= 30 {
+                eprintln!("单路 PASS（≥30 帧），多路受限");
+            } else {
+                code = 1;
+                eprintln!("selftest 失败：帧数不足");
+            }
+            code
         }
         "log" => {
             let path = layout::logs_dir().join("emulator.log");

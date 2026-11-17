@@ -11,6 +11,7 @@
  * [PROTOCOL]: 升级 scrcpy 版本必须重跑探针（/tmp 探针脚本思路见 memory），
  *             握手与 control 布局以实测为准，不信文档记忆。
  */
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,6 +34,8 @@ const SERVER_SHA256: &str = "e531d472932be0d6e5663e6f97a0d5c7c25d8a2c3e2f3ba9ec7
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ScrcpyInfo {
+    /// 会话标签（= 前端窗口标识，M3 多会话）
+    pub label: String,
     pub ws_port: u16,
     pub width: u32,
     pub height: u32,
@@ -41,20 +44,22 @@ pub struct ScrcpyInfo {
 
 #[derive(Default)]
 pub struct ScrcpyState {
-    inner: Mutex<Option<Session>>,
+    /// label → 会话；M3 二批多会话（每应用窗口一路独立流）
+    inner: Mutex<HashMap<String, Session>>,
 }
 
 struct Session {
     adb_shell: tokio::process::Child,
     control: Arc<Mutex<tokio::net::TcpStream>>,
     reverse_spec: String,
+    device_jar: String,
     stop_tx: watch::Sender<bool>,
 }
 
 pub fn running(state: &ScrcpyState) -> bool {
     // try_lock 避免与 start/stop 互锁；取不到锁按「在跑」处理（保守）
     match state.inner.try_lock() {
-        Ok(guard) => guard.is_some(),
+        Ok(guard) => !guard.is_empty(),
         Err(_) => true,
     }
 }
@@ -93,11 +98,14 @@ async fn ensure_server_jar() -> Result<(), AppError> {
 }
 
 async fn adb_args(args: &[&str]) -> Result<String, AppError> {
-    let out = tokio::process::Command::new(layout::adb_path())
-        .args(args)
-        .output()
-        .await
-        .map_err(|e| AppError::Engine(format!("adb {args:?} 失败: {e}")))?;
+    // adb 与设备状态耦合，偶发无限挂起（M3 双会话实测）；必须带超时快速失败
+    let out = tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::process::Command::new(layout::adb_path()).args(args).output(),
+    )
+    .await
+    .map_err(|_| AppError::Timeout(format!("adb {args:?} 超过 30s 未响应")))?
+    .map_err(|e| AppError::Engine(format!("adb {args:?} 失败: {e}")))?;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -122,6 +130,21 @@ async fn accept_pair(listener: &TcpListener) -> Result<(tokio::net::TcpStream, t
         .map_err(AppError::Io)
         .map(|(s, _)| s)?;
     Ok((first, second))
+}
+
+/// server 日志排空任务：读到多少排多少进 tracing，防管道塞满卡死 server
+async fn pump_server_log(mut pipe: impl tokio::io::AsyncRead + Unpin) {
+    use tokio::io::AsyncReadExt;
+    let mut buf = [0u8; 4096];
+    loop {
+        match pipe.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let line = String::from_utf8_lossy(&buf[..n]).trim_end().to_string();
+                tracing::debug!("[scrcpy-server] {line}");
+            }
+        }
+    }
 }
 
 async fn read_video_meta(stream: &mut tokio::net::TcpStream) -> Result<(String, u32, u32), AppError> {
@@ -194,22 +217,25 @@ fn build_control(v: &serde_json::Value) -> Option<Vec<u8>> {
     Some(b)
 }
 
-pub async fn start(state: &ScrcpyState) -> Result<ScrcpyInfo, AppError> {
+pub async fn start(state: &ScrcpyState, label: &str) -> Result<ScrcpyInfo, AppError> {
     let mut guard = state.inner.lock().await;
-    if guard.is_some() {
-        return Err(AppError::Engine("投屏已在运行".into()));
+    if guard.contains_key(label) {
+        return Err(AppError::Engine(format!("投屏已在运行: {label}")));
     }
     if !engine::components_ready() {
         return Err(AppError::MissingComponent("运行时未就绪（先启动安卓）".into()));
     }
     ensure_server_jar().await?;
-    cleanup_stale_reverse().await;
 
     // jar 推送 + scid + reverse（每次随机 scid 防串台）
     let jar = layout::runtime_dir().join("scrcpy-server.jar");
-    adb_args(&["push", jar.to_string_lossy().as_ref(), "/data/local/tmp/scrcpy-server.jar"]).await?;
     let scid = rand_u32();
     let scid_hex = format!("{scid:08x}");
+    // 每会话独立设备端 jar 路径：scrcpy server 启动时会派生 CleanUp 子进程
+    // unlinkSelf 删掉共享 jar（v2.4 源码 CleanUp.configure→CleanUp.main），
+    // 多会话共享同一路径会互相拆台导致 ClassNotFound（M3 实测踩坑）
+    let device_jar = format!("/data/local/tmp/scrcpy-server-{scid_hex}.jar");
+    adb_args(&["push", jar.to_string_lossy().as_ref(), &device_jar]).await?;
     let sock_name = format!("scrcpy_{scid_hex}");
 
     let dev_listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
@@ -225,16 +251,23 @@ pub async fn start(state: &ScrcpyState) -> Result<ScrcpyInfo, AppError> {
 
     // spawn server：参数与探针一致（audio=false 单 socket 对）
     let server_cmd = format!(
-        "CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server {SERVER_VERSION} \
+        "CLASSPATH={device_jar} app_process / com.genymobile.scrcpy.Server {SERVER_VERSION} \
          scid={scid_hex} log_level=info max_size=1280 video_bit_rate=8000000 max_fps=60 send_frame_meta=true audio=false"
     );
-    let adb_shell = tokio::process::Command::new(layout::adb_path())
+    let mut adb_shell = tokio::process::Command::new(layout::adb_path())
         .args(["shell", &server_cmd])
-        // server 日志走 adb 通道，这里不接管道：接了不读会塞满 64KB 缓冲把 server 卡死
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        // server 日志走 adb 通道；接管道就必须持续排空（否则 64KB 塞满卡死 server），
+        // 由 pump_server_log 任务消费进 tracing
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| AppError::Engine(format!("scrcpy server 启动失败: {e}")))?;
+    if let Some(out) = adb_shell.stdout.take() {
+        tokio::spawn(pump_server_log(out));
+    }
+    if let Some(err) = adb_shell.stderr.take() {
+        tokio::spawn(pump_server_log(err));
+    }
 
     let (mut video, control) = accept_pair(&dev_listener).await?;
     let (codec, width, height) = read_video_meta(&mut video).await?;
@@ -244,12 +277,14 @@ pub async fn start(state: &ScrcpyState) -> Result<ScrcpyInfo, AppError> {
         adb_shell,
         control: Arc::new(Mutex::new(control)),
         reverse_spec: format!("localabstract:{sock_name}"),
+        device_jar,
         stop_tx,
     };
 
     // WS 写半边共享给 video 泵；读半边归 accept 循环（tokio Mutex 跨 await
-    // 会互相饿死，读写必须拆 fd：try_clone 复制描述符）
-    let ws_writer: Arc<Mutex<Option<WsConn>>> = Arc::new(Mutex::new(None));
+    // 会互相饿死，读写必须拆 fd：tokio::io::split 拆分读写半）
+    let ws_writer: Arc<Mutex<Option<WsConn<tokio::io::WriteHalf<tokio::net::TcpStream>>>>> =
+        Arc::new(Mutex::new(None));
 
     // WS 接受循环：第一个客户端是 webview；握手后发 meta，再循环收输入文本
     let control = Arc::clone(&session.control);
@@ -262,28 +297,20 @@ pub async fn start(state: &ScrcpyState) -> Result<ScrcpyInfo, AppError> {
                 _ = stop_rx.changed() => break,
                 acc = ws_listener.accept() => {
                     let Ok((sock, _)) = acc else { break };
-                    let std_sock = match sock.into_std() {
-                        Ok(s) => s,
-                        Err(e) => {
-                            tracing::warn!("into_std 失败: {e}");
-                            continue;
-                        }
-                    };
-                    let _ = std_sock.set_nonblocking(false);
-                    let _ = std_sock.set_nodelay(true);
-                    let Ok(read_half) = std_sock.try_clone() else { continue };
-                    let mut read_ws = WsConn::new(read_half);
-                    if let Err(e) = WsConn::handshake(read_ws.stream_mut()) {
+                    let _ = sock.set_nodelay(true);
+                    // 握手在整流上完成，再拆读写半（泵持写半、输入循环持读半）
+                    let mut full = WsConn::new(sock);
+                    if let Err(e) = full.handshake().await {
                         tracing::warn!("WS 握手失败: {e}");
                         continue;
                     }
-                    let mut write_ws = WsConn::new(std_sock);
-                    if write_ws.send_text(&meta_json).is_err() {
+                    let (mut read_ws, mut write_ws) = full.into_split();
+                    if write_ws.send_text(&meta_json).await.is_err() {
                         continue;
                     }
                     tracing::info!(ws_port, "投屏客户端已接入");
                     *writer_for_accept.lock().await = Some(write_ws);
-                    while let Some(text) = read_ws.read_text() {
+                    while let Some(text) = read_ws.read_text().await {
                         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
                         if let Some(bytes) = build_control(&v) {
                             let mut c = control.lock().await;
@@ -327,7 +354,7 @@ pub async fn start(state: &ScrcpyState) -> Result<ScrcpyInfo, AppError> {
                     };
                     let mut payload = pts.to_be_bytes().to_vec();
                     payload.extend_from_slice(&data);
-                    if ws.send_binary(&payload).is_err() {
+                    if ws.send_binary(&payload).await.is_err() {
                         tracing::warn!("WS 发送帧失败，丢帧 len={}", data.len());
                         continue;
                     }
@@ -337,8 +364,8 @@ pub async fn start(state: &ScrcpyState) -> Result<ScrcpyInfo, AppError> {
         }
     });
 
-    *guard = Some(session);
-    Ok(ScrcpyInfo { ws_port, width, height, codec })
+    guard.insert(label.to_string(), session);
+    Ok(ScrcpyInfo { label: label.to_string(), ws_port, width, height, codec })
 }
 
 async fn read_frame(stream: &mut tokio::net::TcpStream) -> Option<(u64, Vec<u8>)> {
@@ -362,26 +389,24 @@ fn rand_u32() -> u32 {
     ((nanos.wrapping_mul(2654435761).rotate_left(17) ^ (std::process::id() as u64)) as u32) & 0x7fff_ffff
 }
 
-/// 清理历史会话遗留的 scrcpy reverse 规则（pkill 等绕过 stop 时会堆积）
-async fn cleanup_stale_reverse() {
-    if let Ok(list) = adb_args(&["reverse", "--list"]).await {
-        for line in list.lines() {
-            let spec = line.trim();
-            if spec.starts_with("localabstract:scrcpy_") {
-                let _ = adb_args(&["reverse", "--remove", spec]).await;
-            }
-        }
-    }
-}
-
-/// 停止投屏：杀 server shell、清 reverse、清状态
-pub async fn stop(state: &ScrcpyState) -> Result<(), AppError> {
+/// 停止投屏：杀 server shell、清 reverse、清状态。label=None 停全部。
+/// 历史会话遗留的 reverse 规则不清理：陈旧规则指向死端口，对新会话（新 scid）
+/// 无影响（实测 13 条堆积时单路照常）；批量 adb reverse 操作反而会挂死（M3 实测），
+/// stop() 的定向 --remove 已覆盖正常路径。
+pub async fn stop(state: &ScrcpyState, label: Option<&str>) -> Result<(), AppError> {
     let mut guard = state.inner.lock().await;
-    if let Some(mut session) = guard.take() {
-        let _ = session.stop_tx.send(true);
-        let _ = session.adb_shell.start_kill();
-        let _ = session.adb_shell.wait().await;
-        let _ = adb_args(&["reverse", "--remove", &session.reverse_spec]).await;
+    let targets: Vec<String> = match label {
+        Some(l) => guard.contains_key(l).then(|| l.to_string()).into_iter().collect(),
+        None => guard.keys().cloned().collect(),
+    };
+    for key in targets {
+        if let Some(mut session) = guard.remove(&key) {
+            let _ = session.stop_tx.send(true);
+            let _ = session.adb_shell.start_kill();
+            let _ = session.adb_shell.wait().await;
+            let _ = adb_args(&["reverse", "--remove", &session.reverse_spec]).await;
+            let _ = adb_args(&["shell", "rm", "-f", &session.device_jar]).await;
+        }
     }
     Ok(())
 }
