@@ -25,6 +25,21 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
-    "icon": ["icons/icon.icns", "icons/icon.png"]
+    "icon": ["icons/icon.icns", "icons/icon.png"],
+    "fileAssociations": [
+      {
+        "ext": ["apk", "xapk", "apks"],
+        "name": "ApkStart 安卓安装包",
+        "description": "双击即装：ApkStart for Mac 接管的安卓应用安装包",
+        "mimeType": "application/vnd.android.package-archive"
+      }
+    ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["apkstart"]
+      }
+    }
   }
 }

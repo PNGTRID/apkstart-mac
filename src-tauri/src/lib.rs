@@ -176,6 +176,11 @@ pub fn run() -> Result<(), tauri::Error> {
         .init();
     tracing::info!(args = ?std::env::args().collect::<Vec<String>>(), "进程启动参数");
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(fsbridge::FsRegistry::default())
         .manage(Arc::new(EngineState::default()))
         .manage(Arc::new(scrcpy::ScrcpyState::default()))
@@ -201,6 +206,26 @@ pub fn run() -> Result<(), tauri::Error> {
             scrcpy_stop,
         ])
         .setup(|app| {
+            // deep-link：apkstart://launch/<包名> 与 --launch 同流（emit 给前端统一处理）
+            use tauri_plugin_deep_link::DeepLinkExt;
+            let handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    // apkstart://launch/<包名> → 取 host 之后的路径段做包名
+                    let raw = url.as_str();
+                    let Some(pkg) = raw
+                        .strip_prefix("apkstart://launch/")
+                        .map(|s| s.trim_start_matches('/'))
+                        .filter(|s| !s.is_empty())
+                    else {
+                        continue;
+                    };
+                    tracing::info!(pkg, "deep-link 启动请求");
+                    if let Some(w) = handle.get_webview_window("main") {
+                        let _ = w.emit("launch-request", pkg);
+                    }
+                }
+            });
             // 托盘常驻：显示主界面 / 退出（roadmap M4）
             let show = MenuItem::with_id(app, "show-main", "显示主界面", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "app-quit", "退出", true, None::<&str>)?;

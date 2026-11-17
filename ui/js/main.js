@@ -274,6 +274,31 @@ function initMainWindow() {
       rt.engineStatus.textContent = `已请求启动 ${pkg}：等待引擎就绪…`;
     })
     .catch(() => { /* 忽略 */ });
+  // deep-link（apkstart://launch/<包名>）与 --launch 同流
+  window.__TAURI__.event.listen('launch-request', (ev) => {
+    pendingLaunchPkg = ev.payload;
+    rt.engineStatus.textContent = `已请求启动 ${ev.payload}：等待引擎就绪…`;
+  });
+  initAutostartUi();
+}
+
+/* ===== 开机自启（tauri-plugin-autostart） ===== */
+
+function initAutostartUi() {
+  const chk = document.getElementById('autostart-chk');
+  if (!chk) return;
+  invoke('plugin:autostart|is_enabled')
+    .then((on) => { chk.checked = !!on; flog('autostart 查询: ' + on); })
+    .catch(() => { chk.disabled = true; });
+  chk.addEventListener('change', () => {
+    const cmd = chk.checked ? 'plugin:autostart|enable' : 'plugin:autostart|disable';
+    invoke(cmd)
+      .then(() => flog('autostart → ' + chk.checked))
+      .catch((e) => {
+        flog('autostart 切换失败: ' + (e?.message ?? e));
+        chk.checked = !chk.checked; // 回滚 UI
+      });
+  });
 }
 
 const invoke = window.__TAURI__.core.invoke;
