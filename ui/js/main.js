@@ -13,14 +13,6 @@ import { initScreenWindow } from './screen.js';
 
 const SCREEN_ONLY = new URLSearchParams(location.search).get('screen') === '1';
 
-if (SCREEN_ONLY) {
-  document.body.classList.add('screen-window');
-  initScreenWindow();
-} else {
-  document.body.classList.add('main-window');
-  initMainWindow();
-}
-
 /* ===== 主窗口：APK 解析 ===== */
 
 const els = {
@@ -99,7 +91,7 @@ async function parseAndShow(path) {
 }
 
 async function initDragDrop() {
-  const webview = window.__TAURI__.webview.getCurrentWebviewWindow();
+  const webview = window.__TAURI__.webviewWindow.getCurrentWebviewWindow();
   await webview.onDragDropEvent((event) => {
     if (event.payload.type === 'enter' || event.payload.type === 'over') {
       els.dropzone.classList.add('is-active');
@@ -160,28 +152,60 @@ function renderEngine(s) {
   rt.btnStop.disabled = s.phase !== 'booting' && s.phase !== 'booted';
   rt.btnScreen.disabled = s.phase !== 'booting' && s.phase !== 'booted';
   if (s.phase === 'booted') rt.dlWrap.hidden = true;
+  // --launch 流：引擎就绪自动点火，booted 后启动目标应用
+  if (pendingLaunchPkg) flog('renderEngine 见 pendingLaunch, phase=' + s.phase);
+  if (pendingLaunchPkg && s.phase === 'ready') {
+    invoke('engine_start', { cold: false }).then(renderEngine).catch((e) => {
+      rt.engineStatus.textContent = `自动启动引擎失败：${e}`;
+    });
+  }
+  if (pendingLaunchPkg && s.phase === 'booted') firePendingLaunch();
+}
+
+/** --launch 流：引擎 booted 后自动启动目标应用并打开投屏窗 */
+let pendingLaunchPkg = null;
+async function firePendingLaunch() {
+  const pkg = pendingLaunchPkg;
+  pendingLaunchPkg = null;
+  try {
+    await invoke('launcher_launch', { package: pkg });
+    rt.engineStatus.textContent = `已启动 ${pkg}`;
+    openScreenWindow();
+  } catch (e) {
+    rt.engineStatus.textContent = `启动 ${pkg} 失败：${e}`;
+  }
 }
 
 /** 打开（或聚焦）独立投屏窗口；尺寸记忆存 localStorage */
 function openScreenWindow() {
-  const { WebviewWindow } = window.__TAURI__.webview;
-  let saved = null;
-  try { saved = JSON.parse(localStorage.getItem('screen-win-size') ?? 'null'); } catch (_) { /* 脏数据当无 */ }
-  const win = new WebviewWindow('screen-main', {
-    url: 'index.html?screen=1',
-    title: '投屏 - ApkStart',
-    width: saved?.w ?? 480,
-    height: saved?.h ?? 854,
-    center: !saved,
-    resizable: true,
-    minWidth: 270,
-    minHeight: 480,
+  flog('openScreenWindow 进入');
+  try {
+    const { WebviewWindow } = window.__TAURI__.webviewWindow;
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('screen-win-size') ?? 'null'); } catch (_) { /* 脏数据当无 */ }
+    const win = new WebviewWindow('screen-main', {
+      url: 'index.html?screen=1',
+      title: '投屏 - ApkStart',
+      width: saved?.w ?? 480,
+      height: saved?.h ?? 854,
+      center: !saved,
+      resizable: true,
+      minWidth: 270,
+      minHeight: 480,
+    });
+    invoke('frontend_log', { message: 'screen window 构造完成' }).catch(() => {});
+  win.once('tauri://created', () => {
+    invoke('frontend_log', { message: 'screen window created' }).catch(() => {});
   });
-  // label 已存在时新实例创建失败：聚焦已有窗口即可
-  win.once('tauri://error', async () => {
-    const existing = await WebviewWindow.fromLabel('screen-main');
-    await existing?.setFocus();
-  });
+    // label 已存在时新实例创建失败：聚焦已有窗口即可
+    win.once('tauri://error', async (e) => {
+      await invoke('frontend_log', { message: `screen window error: ${e?.payload ?? '?'}` }).catch(() => {});
+      const existing = await WebviewWindow.fromLabel('screen-main');
+      await existing?.setFocus();
+    });
+  } catch (e) {
+    invoke('frontend_log', { message: `openScreenWindow 异常: ${e?.message ?? e}` }).catch(() => {});
+  }
 }
 
 function initMainWindow() {
@@ -222,6 +246,7 @@ function initMainWindow() {
     }
   });
   window.__TAURI__.event.listen('dl-progress', onDlProgress);
+  flog('initMainWindow 完成：轮询与监听已挂');
   doProbe();
   // 状态轮询：唯一状态来源（Rust 侧轮询即回收点）
   setInterval(async () => {
@@ -238,10 +263,36 @@ function initMainWindow() {
 
   // 自动化钩子：`apkstart-mac --screen` 启动时直接开投屏窗口
   window.__TAURI__.core.invoke('apksys_argv_flag', { name: '--screen' })
-    .then((on) => { if (on) openScreenWindow(); })
+    .then((on) => { flog('argv_flag --screen=' + on); if (on) openScreenWindow(); })
+    .catch((e) => { flog('argv_flag 拒绝: ' + (e?.message ?? JSON.stringify(e))); });
+  // `apkstart-mac --launch <包名>`（.app 包装器双击入口）：引擎就绪后自动启动应用
+  window.__TAURI__.core.invoke('apksys_argv_value', { name: '--launch' })
+    .then((pkg) => {
+      flog('argv --launch 收到: ' + pkg);
+      if (!pkg) return;
+      pendingLaunchPkg = pkg;
+      rt.engineStatus.textContent = `已请求启动 ${pkg}：等待引擎就绪…`;
+    })
     .catch(() => { /* 忽略 */ });
 }
 
 const invoke = window.__TAURI__.core.invoke;
+const flog = (m) => invoke('frontend_log', { message: m }).catch(() => {});
+flog('main.js 顶层已执行');
 
-initMainWindow();
+// 前端异常回传 Rust 日志（无头调试通道）
+window.addEventListener('error', (e) => {
+  invoke('frontend_log', { message: `${e.message} @ ${e.filename}:${e.lineno}` }).catch(() => {});
+});
+
+try {
+  if (SCREEN_ONLY) {
+    document.body.classList.add('screen-window');
+    initScreenWindow();
+  } else {
+    document.body.classList.add('main-window');
+    initMainWindow();
+  }
+} catch (e) {
+  invoke('frontend_log', { message: `init: ${e?.message ?? e}` }).catch(() => {});
+}

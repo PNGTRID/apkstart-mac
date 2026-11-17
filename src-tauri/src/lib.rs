@@ -11,6 +11,7 @@ pub mod dl;
 pub mod engine;
 pub mod error;
 pub mod fsbridge;
+pub mod launcher;
 pub mod layout;
 pub mod scrcpy;
 pub mod util;
@@ -19,6 +20,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use serde::Serialize;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager};
 
 use engine::EngineState;
@@ -135,6 +138,34 @@ async fn scrcpy_stop(
     scrcpy::stop(&state, label.as_deref()).await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn launcher_generate_wrapper(
+    meta: launcher::WrapperMeta,
+) -> Result<String, String> {
+    launcher::generate_wrapper(&meta).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn launcher_launch(package: String) -> Result<(), String> {
+    launcher::launch_app(&package).await.map_err(|e| e.to_string())
+}
+
+/// argv 具名参数取值（`--launch <pkg>` 等），供前端自动化流读取
+#[tauri::command]
+async fn apksys_argv_value(name: String) -> Result<Option<String>, String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    Ok(args
+        .iter()
+        .position(|a| a == &name)
+        .and_then(|i| args.get(i + 1).cloned()))
+}
+
+/// 前端 JS 异常回传（webview console 不可见于外部调试）
+#[tauri::command]
+fn frontend_log(message: String) {
+    tracing::error!("[frontend] {message}");
+}
+
 /// 组装 Tauri 应用并进入事件循环；窗口与安全配置见 tauri.conf.json。
 pub fn run() -> Result<(), tauri::Error> {
     tracing_subscriber::fmt()
@@ -143,6 +174,7 @@ pub fn run() -> Result<(), tauri::Error> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+    tracing::info!(args = ?std::env::args().collect::<Vec<String>>(), "进程启动参数");
     let app = tauri::Builder::default()
         .manage(fsbridge::FsRegistry::default())
         .manage(Arc::new(EngineState::default()))
@@ -155,6 +187,10 @@ pub fn run() -> Result<(), tauri::Error> {
             fsbridge::apksys_close,
             fsbridge::apksys_argv_path,
             fsbridge::apksys_argv_flag,
+            apksys_argv_value,
+            frontend_log,
+            launcher_generate_wrapper,
+            launcher_launch,
             doctor_probe,
             engine_prepare,
             engine_start,
@@ -164,6 +200,31 @@ pub fn run() -> Result<(), tauri::Error> {
             scrcpy_start,
             scrcpy_stop,
         ])
+        .setup(|app| {
+            // 托盘常驻：显示主界面 / 退出（roadmap M4）
+            let show = MenuItem::with_id(app, "show-main", "显示主界面", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "app-quit", "退出", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let mut tray = TrayIconBuilder::with_id("apkstart-tray")
+                .menu(&menu)
+                .show_menu_on_left_click(true)
+                .tooltip("ApkStart for Mac");
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.build(app)?;
+            Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == "show-main" {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            } else if event.id() == "app-quit" {
+                app.exit(0);
+            }
+        })
         .build(tauri::generate_context!())?;
     app.run(|app, event| {
         // 退出兜底：应用关闭时若模拟器还活着，SIGTERM 让它存快照再走

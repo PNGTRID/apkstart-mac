@@ -72,6 +72,37 @@ pub fn base64_encode(data: &[u8]) -> String {
     out
 }
 
+fn b64_val(c: u8) -> Option<u32> {
+    match c {
+        b'A'..=b'Z' => Some(u32::from(c - b'A')),
+        b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
+        b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+/// 宽松 base64 解码：忽略空白与 '=' padding；非法字符报错
+pub fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let mut acc = 0u32;
+    let mut bits = 0u32;
+    for c in text.bytes() {
+        if c.is_ascii_whitespace() || c == b'=' {
+            continue;
+        }
+        let v = b64_val(c).ok_or_else(|| format!("非法 base64 字符: {}", c as char))?;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +123,10 @@ mod tests {
         assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
         assert_eq!(base64_encode(b"hel"), "aGVs");
         assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
+        assert_eq!(base64_decode("aGVs").unwrap(), b"hel");
+        // 混入空白与换行仍可解
+        assert_eq!(base64_decode("aGVs\nbG8=").unwrap(), b"hello");
+        assert!(base64_decode("a*b").is_err());
     }
 }

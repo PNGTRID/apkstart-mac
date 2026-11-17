@@ -12,7 +12,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use apkstart_mac::{doctor, dl, engine, layout, scrcpy};
+use apkstart_mac::{doctor, dl, engine, launcher, layout, scrcpy};
 
 fn print_probe(p: &doctor::Probe) {
     for line in p.summary() {
@@ -210,6 +210,45 @@ async fn main() {
                 eprintln!("selftest 失败：帧数不足");
             }
             code
+        }
+        "genwrap" => {
+            // 脚本化生成 .app 包装器：--label X --package Y [--icon 图标路径]
+            let mut label = String::new();
+            let mut package = String::new();
+            let mut icon_path = None;
+            let mut exe_path = None;
+            let mut it = args.iter().skip(1);
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--label" => label = it.next().cloned().unwrap_or_default(),
+                    "--package" => package = it.next().cloned().unwrap_or_default(),
+                    "--icon" => icon_path = it.next().cloned(),
+                    "--exe" => exe_path = it.next().cloned(),
+                    _ => {}
+                }
+            }
+            if label.is_empty() || package.is_empty() {
+                eprintln!("genwrap 需要 --label 与 --package（--exe/--icon 可选）");
+                std::process::exit(2);
+            }
+            let icon_b64 = icon_path.as_ref().and_then(|p| std::fs::read(p).ok())
+                .map(|bytes| apkstart_mac::util::base64_encode(&bytes));
+            let meta = launcher::WrapperMeta {
+                label,
+                package,
+                icon_png_base64: icon_b64,
+                exe_path,
+            };
+            match launcher::generate_wrapper(&meta).await {
+                Ok(path) => {
+                    println!("包装器已生成: {path}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("生成失败: {e}");
+                    1
+                }
+            }
         }
         "log" => {
             let path = layout::logs_dir().join("emulator.log");

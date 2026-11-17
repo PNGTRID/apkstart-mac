@@ -146,7 +146,7 @@ function bindKeys() {
     // F11 全屏切换（铺满高度居中不变形，由 CSS flex 保证）
     if (e.key === 'F11') {
       e.preventDefault();
-      const win = tauri.window.getCurrentWebviewWindow();
+      const win = tauri.webviewWindow.getCurrentWebviewWindow();
       win.isFullscreen().then((fs) => win.setFullscreen(!fs));
       return;
     }
@@ -161,7 +161,7 @@ function bindKeys() {
 /** 尺寸记忆：恢复在窗口启动时由主窗口创建参数完成；此处只负责保存 */
 function bindSizeMemory() {
   const tauri = window.__TAURI__;
-  const win = tauri.window.getCurrentWebviewWindow();
+  const win = tauri.webviewWindow.getCurrentWebviewWindow();
   let timer = null;
   win.onResized(async () => {
     clearTimeout(timer);
@@ -175,7 +175,7 @@ function bindSizeMemory() {
 
 async function restoreSize() {
   const tauri = window.__TAURI__;
-  const win = tauri.window.getCurrentWebviewWindow();
+  const win = tauri.webviewWindow.getCurrentWebviewWindow();
   try {
     const saved = JSON.parse(localStorage.getItem(SIZE_KEY) ?? 'null');
     if (saved?.w && saved?.h) {
@@ -190,7 +190,7 @@ async function restoreSize() {
 /** 关窗即停会话：onCloseRequested 里先 scrcpy_stop 再放行 */
 async function bindClose() {
   const tauri = window.__TAURI__;
-  const win = tauri.window.getCurrentWebviewWindow();
+  const win = tauri.webviewWindow.getCurrentWebviewWindow();
   await win.onCloseRequested(async () => {
     try { await tauri.core.invoke('scrcpy_stop', { label: SESSION_LABEL }); } catch (_) { /* 幂等 */ }
   });
@@ -240,7 +240,7 @@ export function initScreenWindow() {
   restoreSize();
   els.btnStop.addEventListener('click', async () => {
     try { await tauri.core.invoke('scrcpy_stop', { label: SESSION_LABEL }); } catch (_) { /* 幂等 */ }
-    tauri.window.getCurrentWebviewWindow().close();
+    tauri.webviewWindow.getCurrentWebviewWindow().close();
   });
   startScreen();
   setInterval(() => {
