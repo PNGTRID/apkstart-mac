@@ -44,7 +44,7 @@
 - 窗口层：模拟器一律 headless（`-no-window`），投屏走 scrcpy 协议 + WebCodecs 解码；上游 SetParent 跨进程嵌窗方案在 macOS 不可行，禁止复活
 - MCP 服务端：rmcp + Streamable HTTP + 仅监听 127.0.0.1 + token 鉴权；权限默认 B 级全开（含输入控制），设置页可降级 A 级（仅管理操作）
 - 分发：轻量壳安装包 + 首启按需下载运行时整包（~1.2GB）；优先复用本机 Android Studio SDK
-- 镜像：Apple Silicon 用 `system-images;android-34;google_apis_playstore;arm64-v8a`；x86-only 应用明确不支持并给中文说明
+- 镜像：Apple Silicon 用 google_apis_playstore 的 arm64-v8a 镜像；x86-only 应用明确不支持并给中文说明。（2026-11-17 修订：拍板时的 android-34 arm64-v8a 在 dl.google.com 无发布记录，实测取 android-35 r08；M2 实测见 layout.rs 坐标）
 - 明确不做：Windows 版（上游已有）、SwiftUI/AppKit 全重写、自造 agent 协议（统一 MCP）、iOS 侧任何功能
 
 ### Rust

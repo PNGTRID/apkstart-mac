@@ -57,7 +57,7 @@ Rust 层职责边界：文件 I/O、外部进程、网络下载、MCP 服务；�
   1. 本机 Android Studio SDK（`~/Library/Android/sdk`）——emulator / platform-tools / system-images 直接复用，零下载
   2. 自有运行时目录整包下载（镜像源可选，测速选优）
   3. Google 官方源兜底
-- 镜像选择：Apple Silicon → `system-images;android-34;google_apis_playstore;arm64-v8a`；Intel → x86_64 同级镜像
+- 镜像选择：Apple Silicon → `system-images;android-35;google_apis_playstore;arm64-v8a`（2026-11-17 修订：拍板时的 android-34 arm64-v8a 在官方仓库无发布，实测 android-35 r08 存在且冷启 ~12s）；Intel → x86_64 同级镜像
 - 加速探测：HVF 可用即用；不可用降软件模拟并提示性能预期；失败原因翻译成中文附修复建议（对齐上游体验）
 - 数据目录（程序目录与数据目录分离，更新不丢数据）：
 

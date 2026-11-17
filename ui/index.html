@@ -55,6 +55,26 @@
     </section>
 
     <p class="status" id="status" hidden></p>
+
+    <section class="card" id="runtime-card">
+      <p class="section-title">安卓运行时</p>
+      <ul class="probe-list" id="probe-list">
+        <li class="probe-line">环境检查中…</li>
+      </ul>
+      <div class="dl-wrap" id="dl-wrap" hidden>
+        <div class="dl-bar"><div class="dl-fill" id="dl-fill"></div></div>
+        <p class="dl-label" id="dl-label"></p>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="btn-probe">检查环境</button>
+        <button class="btn btn-primary" id="btn-prepare">准备运行时</button>
+        <button class="btn btn-primary" id="btn-start" disabled>启动安卓</button>
+        <button class="btn" id="btn-stop" disabled>停止</button>
+        <button class="btn btn-ghost" id="btn-log">日志</button>
+      </div>
+      <p class="engine-status" id="engine-status"></p>
+      <pre class="engine-log" id="engine-log" hidden></pre>
+    </section>
   </main>
   <script type="module" src="js/main.js"></script>
 </body>

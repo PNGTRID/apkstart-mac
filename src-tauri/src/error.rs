@@ -20,6 +20,16 @@ pub enum AppError {
     BadFd(i32),
     /// 内部共享状态锁损坏（Mutex 中毒）
     PoisonedLock,
+    /// 下载失败（网络/校验/断点异常）
+    Download(String),
+    /// 解压/落位失败
+    Extract(String),
+    /// 引擎（模拟器）启动/运行异常
+    Engine(String),
+    /// 等待超时（启动引导、设备上线）
+    Timeout(String),
+    /// 环境缺组件（运行时未准备等）
+    MissingComponent(String),
 }
 
 impl fmt::Display for AppError {
@@ -29,6 +39,11 @@ impl fmt::Display for AppError {
             AppError::BadPath(p) => write!(f, "非法路径（仅接受绝对路径）: {p}"),
             AppError::BadFd(fd) => write!(f, "文件句柄不存在或已关闭: {fd}"),
             AppError::PoisonedLock => write!(f, "内部状态锁损坏，请重启应用"),
+            AppError::Download(m) => write!(f, "下载失败: {m}"),
+            AppError::Extract(m) => write!(f, "解压失败: {m}"),
+            AppError::Engine(m) => write!(f, "引擎异常: {m}"),
+            AppError::Timeout(m) => write!(f, "等待超时: {m}"),
+            AppError::MissingComponent(m) => write!(f, "缺少组件: {m}"),
         }
     }
 }

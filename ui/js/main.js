@@ -103,10 +103,105 @@ async function init() {
     const argPath = await window.__TAURI__.core.invoke('apksys_argv_path');
     if (argPath) {
       await parseAndShow(argPath);
-      return;
+    } else {
+      await initDragDrop();
     }
   } catch (_) { /* argv 检查失败不阻塞拖放入口 */ }
-  await initDragDrop();
+  initRuntime();
+}
+
+/* ===== 运行时卡片（M2） ===== */
+
+const rt = {
+  probeList: document.getElementById('probe-list'),
+  dlWrap: document.getElementById('dl-wrap'),
+  dlFill: document.getElementById('dl-fill'),
+  dlLabel: document.getElementById('dl-label'),
+  btnProbe: document.getElementById('btn-probe'),
+  btnPrepare: document.getElementById('btn-prepare'),
+  btnStart: document.getElementById('btn-start'),
+  btnStop: document.getElementById('btn-stop'),
+  btnLog: document.getElementById('btn-log'),
+  engineStatus: document.getElementById('engine-status'),
+  engineLog: document.getElementById('engine-log'),
+};
+
+const invoke = window.__TAURI__.core.invoke;
+
+function renderProbe(probe) {
+  // probe.summary 由 Rust 序列化为 [{ok, text}] 数组
+  rt.probeList.innerHTML = probe.summary
+    .map((l) => `<li class="probe-line ${l.ok ? 'probe-line-ok' : 'probe-line-bad'}">${l.ok ? '✓' : '✗'} ${l.text}</li>`)
+    .join('');
+  const ready = probe.platform_tools_ready && probe.emulator_ready && probe.sysimg_ready;
+  rt.btnPrepare.textContent = ready ? '重新准备' : '准备运行时';
+}
+
+async function doProbe() {
+  try {
+    renderProbe(await invoke('doctor_probe'));
+  } catch (e) {
+    rt.probeList.innerHTML = `<li class="probe-line probe-line-bad">环境检查失败：${e}</li>`;
+  }
+}
+
+function onDlProgress(ev) {
+  const p = ev.payload;
+  rt.dlWrap.hidden = false;
+  rt.dlFill.style.width = `${Math.min(100, (p.downloaded * 100) / Math.max(1, p.total)).toFixed(1)}%`;
+  rt.dlLabel.textContent = `${p.pkg}：${(p.downloaded / 1e6).toFixed(0)} / ${(p.total / 1e6).toFixed(0)} MB（${p.phase}）`;
+}
+
+function renderEngine(s) {
+  const text = s.error ? `${s.note} ${s.error}` : s.note;
+  rt.engineStatus.textContent = `状态：${s.phase}${text ? ` — ${text}` : ''}${s.pid ? `（pid ${s.pid}）` : ''}`;
+  rt.btnStart.disabled = s.phase !== 'ready';
+  rt.btnStop.disabled = s.phase !== 'booting' && s.phase !== 'booted';
+  if (s.phase === 'booted') rt.dlWrap.hidden = true;
+}
+
+function initRuntime() {
+  rt.btnProbe.addEventListener('click', doProbe);
+  rt.btnPrepare.addEventListener('click', async () => {
+    rt.btnPrepare.disabled = true;
+    rt.engineStatus.textContent = '准备运行时中…（下载约 2.2 GB，可在网络慢时中断重续）';
+    try {
+      await invoke('engine_prepare');
+      rt.engineStatus.textContent = '运行时就绪';
+    } catch (e) {
+      rt.engineStatus.textContent = `准备失败：${e}`;
+    } finally {
+      rt.btnPrepare.disabled = false;
+      await doProbe();
+    }
+  });
+  rt.btnStart.addEventListener('click', async () => {
+    try {
+      renderEngine(await invoke('engine_start', { cold: false }));
+    } catch (e) {
+      rt.engineStatus.textContent = `启动失败：${e}`;
+    }
+  });
+  rt.btnStop.addEventListener('click', async () => {
+    try {
+      renderEngine(await invoke('engine_stop'));
+    } catch (e) {
+      rt.engineStatus.textContent = `停止失败：${e}`;
+    }
+  });
+  rt.btnLog.addEventListener('click', async () => {
+    rt.engineLog.hidden = !rt.engineLog.hidden;
+    if (!rt.engineLog.hidden) {
+      rt.engineLog.textContent = await invoke('engine_log_tail');
+      rt.engineLog.scrollTop = rt.engineLog.scrollHeight;
+    }
+  });
+  window.__TAURI__.event.listen('dl-progress', onDlProgress);
+  doProbe();
+  // 状态轮询：唯一状态来源（Rust 侧轮询即回收点）
+  setInterval(async () => {
+    try { renderEngine(await invoke('engine_status')); } catch (_) { /* 未挂载时忽略 */ }
+  }, 1500);
 }
 
 init();
