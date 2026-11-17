@@ -10,6 +10,8 @@
 # Rust 构建产物
 /target/
 /src-tauri/target/
+# tauri 构建时自动生成的 schema，不进仓库
+/src-tauri/gen/schemas/
 
 # 前端（本项目保持零依赖，此节防未来误入）
 node_modules/
