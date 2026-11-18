@@ -23,6 +23,7 @@ use tokio::sync::Mutex;
 
 use crate::error::AppError;
 use crate::layout::{self, AVD_NAME, SYSIMG_SDK_DIR};
+use crate::settings::AppSettings;
 
 /// 命名快照：所有存取都走这一个名字，绝不误加载别的快照（上游同策略）
 const SNAPSHOT_NAME: &str = "apkstart";
@@ -110,7 +111,8 @@ pub fn components_ready() -> bool {
 /// 手写最小 AVD：config.ini + .ini 侧车。emulator 首启会用镜像自带的
 /// userdata.img 生成 userdata-qemu.img，无需预建磁盘（上游自造 ext4 建盘
 /// 是 Windows 无 SDK 工具链下的产物，Mac 版走标准镜像体系，见 docs/02 §5）。
-pub async fn ensure_avd() -> Result<(), AppError> {
+/// ram_mb 来自设置页（0=自动 3072），改动后需重启引擎生效（AVD config 重写）。
+pub async fn ensure_avd(ram_mb: u32) -> Result<(), AppError> {
     let home = layout::avd_home();
     let avd_dir = home.join(format!("{AVD_NAME}.avd"));
     tokio::fs::create_dir_all(&avd_dir).await.map_err(AppError::Io)?;
@@ -121,7 +123,7 @@ pub async fn ensure_avd() -> Result<(), AppError> {
          abi=arm64-v8a\n\
          hw.cpu.arch=arm64\n\
          hw.cpu.ncore=4\n\
-         hw.ramSize=3072\n\
+         hw.ramSize={ram_mb}\n\
          image.sysdir.1={SYSIMG_SDK_DIR}/\n\
          image.androidVersion.api=35\n\
          image.tag.id=google_apis_playstore\n\
@@ -188,6 +190,54 @@ pub async fn adb(args: &[&str]) -> Result<String, AppError> {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     ))
+}
+
+/// 带 adb 探活检查 + 超时的运行输出收集；M5 MCP 工具专用（engine::adb 无超时，
+/// 保留给 wait_boot 内部轮询——改它会动引导语义，OCP 不碰）。
+async fn adb_run(args: &[&str], timeout: Duration) -> Result<std::process::Output, AppError> {
+    let adb = layout::adb_path();
+    if !adb.exists() {
+        return Err(AppError::MissingComponent("adb 未安装（先准备运行时）".into()));
+    }
+    tokio::time::timeout(
+        timeout,
+        tokio::process::Command::new(&adb)
+            .args(args)
+            .env("ANDROID_AVD_HOME", layout::avd_home())
+            .output(),
+    )
+    .await
+    .map_err(|_| AppError::Timeout(format!("adb {args:?} 超过 {timeout:?} 未响应")))?
+    .map_err(|e| AppError::Engine(format!("adb {args:?} 执行失败: {e}")))
+}
+
+/// 带超时的 adb 文本原语：stdout+stderr 拼接（非零退出报错），供 install/push
+/// 等工具消费。screencap 等二进制输出禁用本函数（UTF-8 lossy 会损坏数据），
+/// 用 adb_bytes。
+pub async fn adb_raw(args: &[&str], timeout: Duration) -> Result<String, AppError> {
+    let out = adb_run(args, timeout).await?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if !out.status.success() {
+        return Err(AppError::Engine(format!("adb {args:?}: {}", text.trim())));
+    }
+    Ok(text)
+}
+
+/// 带超时的 adb 二进制原语：stdout 原样字节返回（stderr 仅用于判错），
+/// screencap 之类二进制输出必走此路。
+pub async fn adb_bytes(args: &[&str], timeout: Duration) -> Result<Vec<u8>, AppError> {
+    let out = adb_run(args, timeout).await?;
+    if !out.status.success() {
+        return Err(AppError::Engine(format!(
+            "adb {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(out.stdout)
 }
 
 /// 快照有效性：目录存在且 snapshot.pb 非 12 字节空壳（保存被中断会留空壳，
@@ -259,12 +309,17 @@ async fn pump_log(mut pipe: impl tokio::io::AsyncRead + Unpin, kind: &'static st
 }
 
 /// 启动引擎。cold=true 且存在有效本地快照时跳过加载；false 自动。
+/// GPU 模式与内存来自设置页（settings.rs）：auto = host 起不来自动降级
+/// swiftshader 一次；host/swiftshader 强制档不做降级（「强制」语义诚实）。
 /// 实测边界（2026-11-17，emulator 37.2.13 headless）：console kill/quit 与
 /// SIGTERM/SIGINT 均不触发本地快照存盘（留 11 字节空壳 pb），本地 quickboot
 /// 存盘暂不可用；本镜像（android-35 playstore）自带 downloadable snapshot，
-/// 冷启稳定 12~15s，已满足「二启 ≤ 上游量级」的验收。GPU host 启动失败
-/// 自动降级 swiftshader_indirect 一次。
-pub async fn start(state: &Arc<EngineState>, cold: bool) -> Result<EngineStatus, AppError> {
+/// 冷启稳定 12~15s，已满足「二启 ≤ 上游量级」的验收。
+pub async fn start(
+    state: &Arc<EngineState>,
+    cold: bool,
+    settings: &AppSettings,
+) -> Result<EngineStatus, AppError> {
     let mut inner = state.inner.lock().await;
     // 复用孤儿 qemu：主程序退出后模拟器仍存活的场景，直接接管（不重开不冲突）
     let orphan = find_qemu_pid().filter(|p| pid_alive(Some(*p)));
@@ -285,13 +340,16 @@ pub async fn start(state: &Arc<EngineState>, cold: bool) -> Result<EngineStatus,
             return Err(AppError::Engine("引擎已在运行".into()));
         }
     }
-    ensure_avd().await?;
+    ensure_avd(settings.effective_ram_mb()).await?;
     let skip_load = cold || !has_valid_snapshot();
 
-    let mut child = match spawn_emulator("host", skip_load).await {
+    let gpu = settings.gpu_mode.primary();
+    let mut child = match spawn_emulator(gpu, skip_load).await {
         Ok(c) => c,
-        Err(AppError::Engine(m)) if m.contains("进程启动失败") => {
-            tracing::warn!("GPU host 启动失败，降级 swiftshader_indirect");
+        Err(AppError::Engine(m))
+            if m.contains("进程启动失败") && settings.gpu_mode.allow_fallback() =>
+        {
+            tracing::warn!("GPU {gpu} 启动失败，降级 swiftshader_indirect");
             spawn_emulator("swiftshader_indirect", skip_load).await?
         }
         Err(e) => return Err(e),

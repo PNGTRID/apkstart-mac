@@ -169,9 +169,16 @@ pub async fn generate_wrapper(meta: &WrapperMeta) -> Result<String, AppError> {
         .clone()
         .map(PathBuf::from)
         .unwrap_or_else(|| exe_path.clone());
-    // 调试期：包装器启动的主程序日志重定向到 /tmp（M6 打磨移除或改轮转）
+    // 包装器启动的主程序日志：进数据目录日志体系（/tmp 会被系统清理且难找），
+    // 启动时 >5MB 轮转 .old（脚本内自足，不依赖主程序活着）
+    let log = crate::layout::logs_dir().join("wrapper.log");
     let script = format!(
-        "#!/bin/bash\nexec \"{}\" --launch \"{}\" >> /tmp/apkstart-wrapper.log 2>&1\n",
+        "#!/bin/bash\n\
+         L=\"{}\"\n\
+         mkdir -p \"$(dirname \"$L\")\"\n\
+         [ -f \"$L\" ] && [ \"$(/usr/bin/stat -f%z \"$L\")\" -gt 5242880 ] && mv \"$L\" \"$L.old\"\n\
+         exec \"{}\" --launch \"{}\" >> \"$L\" 2>&1\n",
+        log.to_string_lossy(),
         exe.to_string_lossy(),
         meta.package
     );

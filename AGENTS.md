@@ -25,9 +25,9 @@
 
 | 模块 | 路径 | 职责 | 关键文件 |
 |------|------|------|----------|
-| WebView 前端 | ui/ | 页面 + 六解析器移植（zip/axml/arsc/pkgname/apk + 基建） | ui/core/apk.js、ui/AGENTS.md |
-| Rust 主进程 | src-tauri/ | 应用壳：组装层 run()、只读 fs 桥、统一错误类型 | src-tauri/src/lib.rs、fsbridge.rs、src-tauri/AGENTS.md |
-| 验收工具 | tools/ | M1 parity 回归（上游 vs 移植逐字段对比） | tools/m1-parity/parity.mjs |
+| WebView 前端 | ui/ | 应用启动器（网格/安装）+ 六解析器移植（zip/axml/arsc/pkgname/apk + 基建）+ 投屏/设置窗 | ui/js/main.js、launcher.js、ui/AGENTS.md |
+| Rust 主进程 | src-tauri/ | 组装层 run()：引擎/投屏桥/安装器/MCP 服务端/设置/共享目录/启动器数据层 | src-tauri/src/lib.rs、apps.rs、src-tauri/AGENTS.md |
+| 验收工具 | tools/ | M1 parity 回归 + GEB 三层协议机器验收 | tools/m1-parity/parity.mjs、tools/geb-lint.sh |
 
 <!-- 每接入新模块加一行（模块内文件增删改名更新对应 L2），上游参考仓库 upstream/ 不入图谱。 -->
 
@@ -63,15 +63,20 @@
 
 ## 4. 部署与发布
 
-- 待补：M6 建好签名、公证、打包流程后填写
+- 无 Apple Developer 账号（2026-11-18 拍板）：ad-hoc 签名 DMG，无公证，Gatekeeper 首启手动放行（README「下载与安装」有引导文案）
+- 分发渠道：GitHub Release（tag `v*` 触发 `.github/workflows/release.yml`，tauri-action 自动打 DMG 上传）
+- 打包命令：`cargo tauri build`；产物在 `src-tauri/target/release/bundle/`；Cargo.toml 有双 bin，`default-run` 字段钉死主二进制
+- Tauri updater 推迟（ad-hoc 签名下不可用），待有账号再启
 
 ## 5. 测试与验证
 
-- 当前约定：交付前必跑 `cargo clippy` + `cargo build`，前端有 lint 后追加
-- 待补：单元测试 / 集成测试命令，脚手架建成后填写
+- 交付前必跑：`cargo clippy --all-targets -- -D warnings` + `cargo build` 双绿 + `tools/geb-lint.sh` 全绿；改 `ui/core/` 必跑 parity；改 `scrcpy.rs` 必跑 `m2ctl selftest-stream`
+- MCP 回归：启动主程序后 `m2ctl mcp-test`（15 工具清单 + 装启看点确闭环，输出 via 字段验证快路径）
+- 前端语法：`node --check ui/js/*.js`（无 lint 链）
+- 单元测试：util.rs 有测试向量（`cargo test`）；集成测试未建
 
 ## 请你补充（只有人知道的部分）
 
-- 是否有 Apple Developer 账号（Developer ID 签名与公证必需，否则 Gatekeeper 拦截）
-- 分发渠道：官网直链 / GitHub Release / 国内镜像（影响下载器默认源）
-- 上游功能取舍：哪些 Windows 功能 Mac 版明确不要（如 ARM 兼容模式的等价物、开机自启默认值）
+- ~~是否有 Apple Developer 账号~~ 已答（2026-11-18）：无，走 ad-hoc + GitHub Release
+- ~~分发渠道~~ 已答：GitHub Release
+- ~~上游功能取舍~~ 已拍板：x86-only 不支持；prewarm/空闲回收以设置页「空闲自动关机」形式实现（默认关闭）

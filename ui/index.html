@@ -1,9 +1,13 @@
 <!DOCTYPE html>
 <!--
-  [WHY]: 主窗口页面：M1 的「拖入 APK → 离线解析 → 展示名称/图标/ABI」流水线入口。
-  [INPUT]: 样式 css/main.css、行为 js/main.js（type=module，引 ui/core 解析链）。
+  [WHY]: 唯一页面模板：主窗口 = 应用启动器（网格/搜索/安装/状态栏）；?screen=1
+         时由 js/screen.js 跑成投屏窗口（screen-card 显形）；?settings=1 时由
+         js/settings.js 跑成设置窗口（settings-card 显形）。
+  [INPUT]: 样式 css/main.css、行为 js/main.js（主窗口编排）+ js/launcher.js
+           （网格/菜单/欢迎弹窗）+ ui/core 解析链。
   [OUTPUT]: 被 src-tauri/tauri.conf.json 的 build.frontendDist 引用为初始加载页。
-  [BOUND]: 不做安装/启动（M2 起接入）；.apks/.xapk 拆分包按上游口径报错。
+  [BOUND]: 主窗口拖入/选文件 = 直接安装（对齐上游）；.apks/.xapk 拆分包按上游口径报错；
+           投屏与设置卡在主窗口隐藏（hidden 属性），screen/settings 卡在主窗口同理。
   [PROTOCOL]: 页面结构变化时同步 ui/AGENTS.md 成员清单。
 -->
 <html lang="zh-CN">
@@ -12,49 +16,40 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ApkStart for Mac</title>
   <link rel="stylesheet" href="css/main.css">
+  <link rel="stylesheet" href="css/launcher.css">
 </head>
 <body>
   <main class="page">
     <header class="brand">
       <h1>ApkStart for Mac</h1>
-      <p class="brand-sub">双击即装的安卓应用运行器 · M1 解析壳</p>
+      <button class="engine-badge" id="engine-badge" title="点击打开设置" hidden></button>
     </header>
 
-    <section class="dropzone" id="dropzone" aria-label="拖入 APK 安装包">
-      <div class="dropzone-inner">
-        <span class="dropzone-icon">📦</span>
-        <p class="dropzone-title">把 APK 拖进来</p>
-        <p class="dropzone-hint">离线解析包名 / 应用名 / 图标 / ABI，不联网不上传</p>
-        <p class="dropzone-hint-weak">也支持命令行：apkstart-mac /path/to/app.apk</p>
+    <!-- 启动器工具栏：搜索 + 安装入口（screen/settings 窗口隐藏） -->
+    <section class="toolbar" id="launcher-toolbar">
+      <div class="search-wrap">
+        <input id="search" type="text" placeholder="搜索已安装应用" autocomplete="off">
+      </div>
+      <button class="btn btn-primary" id="btn-install-pick">⤓ 安装 APK</button>
+    </section>
+
+    <!-- 应用网格（launcher.js 渲染；空态引导动态替换） -->
+    <section class="grid-wrap" id="grid-wrap">
+      <div class="grid" id="grid"></div>
+      <div class="empty" id="empty" hidden>
+        <p class="empty-icon">📦</p>
+        <p class="empty-title" id="empty-title">还没有已安装的应用</p>
+        <p class="empty-hint" id="empty-hint"></p>
+        <button class="btn btn-primary lg" id="btn-install-empty">选择 APK 文件</button>
       </div>
     </section>
+
+    <p class="status" id="status" hidden></p>
 
     <section class="card card-error" id="error-card" hidden>
       <p class="error-title">解析失败</p>
       <p class="error-message" id="error-message"></p>
     </section>
-
-    <section class="card" id="result-card" hidden>
-      <div class="result-head">
-        <img class="app-icon" id="app-icon" alt="应用图标">
-        <div class="app-titles">
-          <p class="app-label" id="app-label"></p>
-          <p class="app-package" id="app-package"></p>
-        </div>
-      </div>
-      <dl class="meta-grid">
-        <dt>版本</dt><dd id="meta-version"></dd>
-        <dt>SDK</dt><dd id="meta-sdk"></dd>
-        <dt>启动 Activity</dt><dd id="meta-activity"></dd>
-        <dt>屏幕方向</dt><dd id="meta-orientation"></dd>
-        <dt>ABI</dt><dd id="meta-abis"></dd>
-        <dt>图标来源</dt><dd id="meta-icon-file"></dd>
-        <dt>文件大小</dt><dd id="meta-size"></dd>
-      </dl>
-      <p class="next-note">安装与投屏将在 M2/M3 接入，当前版本仅解析展示。</p>
-    </section>
-
-    <p class="status" id="status" hidden></p>
 
     <section class="card" id="runtime-card">
       <p class="section-title">安卓运行时</p>
@@ -74,8 +69,17 @@
         <button class="btn btn-ghost" id="btn-log">日志</button>
       </div>
       <p class="engine-status" id="engine-status"></p>
-      <label class="autostart-line"><input type="checkbox" id="autostart-chk"> 开机自启</label>
       <pre class="engine-log" id="engine-log" hidden></pre>
+    </section>
+
+    <section class="card" id="mcp-card">
+      <p class="section-title">MCP 服务（供 AI Agent 操控模拟器）</p>
+      <p class="mcp-endpoint" id="mcp-endpoint"></p>
+      <div class="btn-row">
+        <button class="btn" id="btn-mcp-token">复制 Token</button>
+        <button class="btn" id="btn-mcp-settings">设置…</button>
+      </div>
+      <p class="engine-status" id="mcp-status"></p>
     </section>
 
     <section class="card screen-card" id="screen-card" hidden>
@@ -87,9 +91,86 @@
       <div class="screen-wrap">
         <canvas id="screen" width="720" height="1280"></canvas>
       </div>
-      <p class="screen-hint">鼠标点击/拖动 = 触摸，滚轮 = 滑动；键盘 Del/Esc/方向键已映射</p>
+      <input id="kbd-capture" class="kbd-capture" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" tabindex="-1" aria-hidden="true">
+      <p class="screen-hint">鼠标点击/拖动 = 触摸，滚轮 = 滑动；Mac 键盘直接打字，本机输入法可用（拼音候选照常弹出），Del/Esc/Tab/方向键已映射</p>
+    </section>
+
+    <section class="card settings-card" id="settings-card" hidden>
+      <p class="section-title">设置</p>
+      <div class="set-line">
+        <span class="set-label">GPU 渲染模式</span>
+        <select id="set-gpu">
+          <option value="auto">自动（host，失败降级软件渲染）</option>
+          <option value="host">强制 host（性能优先）</option>
+          <option value="swiftshader">强制软件渲染（稳定性优先）</option>
+        </select>
+      </div>
+      <div class="set-line">
+        <span class="set-label">模拟器内存</span>
+        <select id="set-ram">
+          <option value="0">自动（3072 MB）</option>
+          <option value="2048">2048 MB</option>
+          <option value="3072">3072 MB</option>
+          <option value="4096">4096 MB</option>
+        </select>
+      </div>
+      <div class="set-line">
+        <span class="set-label">空闲自动关机（分钟，0 = 不回收）</span>
+        <input type="number" id="set-idle" min="0" max="720" step="1">
+      </div>
+      <label class="autostart-line"><input type="checkbox" id="set-share"> 启用共享目录同步（~/ApkStartShared ↔ 模拟器 sdcard/ApkStartShared）</label>
+      <label class="autostart-line"><input type="checkbox" id="set-mcp-b"> MCP 允许 AI 操控屏幕（B 级：点按 / 滑动 / 输入文字）</label>
+      <label class="autostart-line"><input type="checkbox" id="autostart-chk"> 开机自启</label>
+      <p class="set-note">GPU 与内存改动重启引擎后生效；其余即时生效。</p>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-set-save">保存</button>
+      </div>
+      <p class="engine-status" id="set-status"></p>
     </section>
   </main>
+
+  <!-- 底部状态栏（主窗口专属；screen/settings 模式 CSS 隐藏） -->
+  <footer class="statusbar" id="statusbar">
+    <span class="dot" id="status-dot"></span>
+    <span id="status-text">正在检查运行时…</span>
+    <span class="sb-right">
+      <span id="status-device" hidden></span>
+      <span id="status-stats">暂无应用</span>
+      <span class="sb-muted">Powered by RoutineMiku · Mac 版</span>
+    </span>
+  </footer>
+
+  <!-- 全窗拖拽覆盖层：拖入即装 -->
+  <div class="drop-overlay" id="drop-overlay" hidden>
+    <div class="drop-box">松手开始安装<span class="drop-sub">支持单个或多个 .apk 文件</span></div>
+  </div>
+
+  <!-- 右键菜单（launcher.js 填充） -->
+  <div class="ctxmenu" id="ctxmenu" hidden></div>
+
+  <!-- toast 通知（launcher.js 管理） -->
+  <div class="toast-wrap" id="toast-wrap"></div>
+
+  <!-- 欢迎弹窗（launcher.js 控制显隐与内容） -->
+  <div class="modal-mask" id="welcome-mask" hidden>
+    <div class="welcome-card">
+      <div class="welcome-head">
+        <div class="welcome-logo">▶</div>
+        <div class="welcome-hi" id="welcome-hi">你好，欢迎回来</div>
+        <div class="welcome-sub">ApkStart for Mac · 运行时按需自动准备</div>
+      </div>
+      <div class="welcome-body">
+        <div class="welcome-stats" id="welcome-stats"></div>
+        <div class="welcome-tips" id="welcome-tips"></div>
+        <label class="autostart-line"><input type="checkbox" id="welcome-never"> 下次启动不再自动弹出</label>
+        <div class="btn-row">
+          <button class="btn" id="welcome-settings">打开设置</button>
+          <button class="btn btn-primary" id="welcome-ok">开始使用</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="js/main.js"></script>
 </body>
 </html>

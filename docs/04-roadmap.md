@@ -10,25 +10,22 @@
 | M0 脚手架 | ✅ 完成（CI 绿） |
 | M1 壳层移植 | ✅ 完成（抖音 365MB/47162 条目 parity PASS） |
 | M2 运行时引擎 | ✅ 完成（冷启 12s，adb 可用；本地快照存盘不可用见 engine.rs 注释） |
-| M3 投屏窗口层 | ✅ 核心+二批完成（34fps 峰值、注入实证、多会话双路 PASS；黑屏三连根因已修） |
-| M4 Mac 原生体验 | ✅ 主体完成（包装器/深链接/自启/文件关联配置/托盘；双击抖音.app 直达实证）；尾巴见遗留清单 |
-| M5 MCP 服务端 | 未开始（下一里程碑） |
-| M6 打磨分发 | 未开始 |
+| M3 投屏窗口层 | ✅ 完成（34fps 峰值、注入实证、多会话双路 PASS；黑屏三连根因已修；键盘文本注入含中文已修） |
+| M4 Mac 原生体验 | ✅ 完成（包装器/深链接/自启/文件关联/托盘 + 用户点验全过；共享目录同步见遗留清单） |
+| M5 MCP 服务端 | ✅ 完成（rmcp 3.11 + Streamable HTTP 7715 + token 鉴权 + 15 工具 A/B 分级 + 审计；`m2ctl mcp-test` 闭环自测 10/10 PASS；M6 已补输入 scrcpy 快路径） |
+| M6 打磨分发 | ✅ 完成（ad-hoc DMG + GitHub Release CI + Gatekeeper/x86 文案；深链接/文件关联打包实证；统一设置页 + 空闲看门狗 + sharer 双向同步 + MCP scrcpy 快路径 + 延迟采样；updater 待有账号后启） |
+| M7 启动器对齐 | ✅ 完成（对比上游后拍板：主窗口升级为应用启动器——apps.json 持久化 + 应用网格 + 拖入即装 + 搜索/徽章/状态栏/右键菜单/欢迎弹窗；设备清单自动补录使网格=设备真相） |
 
 ## 遗留待办清单
 
 > 跨里程碑零散项统一收敛于此；完成一项删一行。
 
-1. **投屏视觉点验**（用户 10 秒）：投屏窗口画面、鼠标点击/滑动、尺寸记忆、F11 全屏、关窗停会话、autostart 开关——代码就绪，等用户手感确认
-2. **共享目录双向同步**（M4 尾巴）：`~/ApkStartShared` ↔ `/sdcard/ApkStartShared`，引擎 booted 后周期同步；冲突语义与实现（简版 pull+push 全量 vs mtime 增量）待定
-3. **apkstart:// 深链接真实唤起**：插件与事件流已就绪，Info.plist 注入需 M6 打包后生效
-4. **文件关联双击 .apk 即装**：fileAssociations 配置已就绪，同上 M6 生效
-5. **模拟器 qemu SIGABRT 稳定性专项**（M6）：高负载下偶发崩溃（崩溃报告 2026-11-18-003054.ips 在案，gRPC bad_function_call）；排查 GPU host vs swiftshader 模式取舍；主程序退出路径已改 emu kill 优雅停机
-6. **输入延迟精确量测**（M5）：「<100ms」验收口径需帧级时间戳，随 MCP「看→点→确认」闭环一起做
-7. **设置页**（M6）：autostart 开关目前散在 runtime 卡，收进设置页；GPU 模式取舍、快照策略开关一并
-8. **wrapper 日志重定向移除**：调试期 `>> /tmp/apkstart-wrapper.log` 写死在 launcher.rs 模板，M6 改轮转或移除
+1. **MCP list_changed 实时通知**：A/B 切换现为「下次 list_tools 生效」（调用点即时拒绝已生效）；rmcp LocalSessionHandle 通知链路复杂度不成比例，暂缓
+2. **M6 重新打包发布**：tag `v0.1.0` 推送触发 release.yml（等用户明示推 tag）
+3. **M4/M7 用户点验**：sharer、设置窗口、投屏键盘（含本机输入法）、启动器网格/右键/欢迎弹窗均已实测；剩余手感项归用户日常使用反馈
+4. **M7 重新打包发布**：tag `v0.1.0` 推送触发 release.yml（等用户明示推 tag）
 
-## M0 脚手架（0.5 天）
+## M0 脚手架## M0 脚手架（0.5 天）
 
 - clone 上游到 `upstream/`（只读参考：不改、不提交、写进 .gitignore）
 - Tauri 2 init（Rust + 静态 UI）、目录骨架、CI（lint + build）
@@ -79,8 +76,21 @@
 
 ## M6 打磨分发（2-3 天）
 
-- 签名 + 公证（依赖 Apple Developer 账号）、DMG、Tauri updater
-- 空闲快照回收、内存瘦身（对齐上游「空闲预热可关闭」）
-- x86-only 应用不支持时的中文说明文案
+- 打包：ad-hoc 签名 DMG（2026-11-18 拍板：无 Apple Developer 账号，公证/updater 推迟）、GitHub Release CI
+- Gatekeeper 中文引导文案；x86-only 应用不支持的中文说明（UI 警告 + 安装错误翻译）
+- 统一设置页（GPU 模式 / 内存 / 空闲自动关机 / 共享目录 / MCP 权限收拢）；空闲回收看门狗
+- 共享目录双向同步 sharer（~/ApkStartShared ↔ /sdcard/ApkStartShared，上游双 mtime 增量语义）
+- MCP 输入快路径（scrcpy control）；输入延迟采样；wrapper 日志迁 logs_dir
 
-验收：另一台干净 Mac 下载安装即用，首启引导下载运行时一次跑通。
+验收：另一台干净 Mac 下载 DMG → Gatekeeper 放行 → 首启下载运行时跑通；深链接 / 文件关联在打包产物上实证生效。
+
+## M7 启动器对齐（P0+P1+P2，2026-11-18 完成）
+
+- 对比上游截图与源码后拍板：主窗口从解析壳升级为应用启动器（上游 15 设置分组 / 网格 / 欢迎弹窗的 Mac 对齐版）
+- apps.json 持久化（apps.rs：原子写 / upsert 保用户态 / 排序在数据层 / 前台 running / 设备清单自动补录）
+- 主流程闭环补齐：解析 → 安装（install_core 共享 + 中文错误翻译 + 全局互斥）→ 网格卡片 → 单击启动（引擎自动点火 + 投屏联动）
+- 启动器体验：搜索 / 标题栏徽章五态 / 底部状态栏 / 空态引导 / 文件选择器（tauri-plugin-dialog）/ toast
+- 增强：右键菜单七项（打开/关闭/快捷方式/置顶/定位 APK/清数据/卸载）/ 欢迎弹窗（时段问候+统计+提示+一天一次）
+- 明确不做：APK 备份副本、按键映射（游戏向）、软件更新提示（无账号）
+
+验收：拖入 APK 即装出卡片、单击自动开机启动、MCP 与 UI 安装清单一致、右键七项全通。

@@ -1,13 +1,17 @@
 /**
  * [WHY]: 独立投屏窗口的逻辑（index.html?screen=1）：WS 收 H.264 AnnexB →
- *        WebCodecs 解码 → canvas 渲染；鼠标/滚轮/按键注入；窗口行为
- *        （尺寸记忆 / F11 全屏 / 关窗停会话）。
+ *        WebCodecs 解码 → canvas 渲染；鼠标/滚轮/键盘注入（可打印字符与
+ *        中文走 INJECT_TEXT，导航键走 keycode）；窗口行为（尺寸记忆 /
+ *        F11 全屏 / 关窗停会话）。
  * [INPUT]: scrcpy_start(label) 返回的 ws_port；Rust 帧格式 [8B pts][AnnexB]
  *          （config 包 pts 最高位为 1，且永远是第一帧）；主窗口写入的
  *          localStorage 尺寸记忆（screen-win-size）。
  * [OUTPUT]: 无对外接口；窗口关闭即停对应会话（label=main，M3 单投屏窗）。
- * [BOUND]: 键盘只映射导航/编辑常用键（中文 IME 属 M5）；单窗单会话；
- *          Safari 若拒 AnnexB 解码，降级方案见 memory。
+ * [BOUND]: 键盘经隐形输入框（#kbd-capture）接管：本机输入法可正常组合中文
+ *          （候选期按键归 IME），英文逐键、组合文本整串经 INJECT_TEXT 下发；
+ *          特殊键映射 Del/Esc/Tab/方向键，Ctrl/Cmd 组合不下发（留给本机快捷键）；
+ *          单窗单会话；Safari 若拒 AnnexB 解码，降级方案见 memory；
+ *          点击响应采样为体感近似（帧到达口径），非硬件级延迟量测。
  * [PROTOCOL]: Rust 帧格式或 control JSON 字段变化必须同步本文件。
  */
 
@@ -119,12 +123,36 @@ function isKeyChunk(nals) {
 
 function handleFrame(frame) {
   frameCount += 1;
+  settleTapSample();
   if (els.canvas.width !== frame.displayWidth || els.canvas.height !== frame.displayHeight) {
     els.canvas.width = frame.displayWidth;
     els.canvas.height = frame.displayHeight;
   }
   ctx.drawImage(frame, 0, 0);
   frame.close();
+}
+
+/* ===== 点击响应采样（M6 遗留 #5）：「<100ms」验收口径 =====
+ * pointerdown 记时刻，其后首帧到达即视为响应（静止画面 scrcpy 不发帧，
+ * 点击后画面变化的帧正是响应帧）；1s 内无帧视为无效采样丢弃。
+ * 累计 50 条打一条 p50/p90 进日志（wrapper.log 可查）。 */
+
+let tapSamples = [];
+let pendingTapT0 = null;
+
+function settleTapSample() {
+  if (pendingTapT0 == null) return;
+  const delta = performance.now() - pendingTapT0;
+  pendingTapT0 = null;
+  if (delta >= 1000) return;
+  tapSamples.push(delta);
+  if (tapSamples.length < 50) return;
+  const sorted = [...tapSamples].sort((a, b) => a - b);
+  const pct = (q) => Math.round(sorted[Math.floor(sorted.length * q)]);
+  window.__TAURI__.core.invoke('frontend_log', {
+    message: `投屏点击响应采样 n=${sorted.length} p50=${pct(0.5)}ms p90=${pct(0.9)}ms max=${Math.round(sorted[sorted.length - 1])}ms`,
+  }).catch(() => {});
+  tapSamples = [];
 }
 
 function ensureDecoder(avcc, codec) {
@@ -199,6 +227,7 @@ function bindPointer() {
   els.canvas.addEventListener('pointerdown', (e) => {
     try { els.canvas.setPointerCapture(e.pointerId); } catch (_) { /* capture 失败不阻断注入 */ }
     pressed = true;
+    pendingTapT0 = performance.now();
     sendInput({ t: 'touch', action: 0, ...toVideoCoords(e) });
   });
   els.canvas.addEventListener('pointermove', (e) => {
@@ -224,12 +253,50 @@ function bindKeys() {
       win.isFullscreen().then((fs) => win.setFullscreen(!fs));
       return;
     }
-    if (els.card.hidden || !ANDROID_KEYS[e.code]) return;
+    if (els.card.hidden) return;
+    // 本机输入法组合期间（选候选/翻页）按键归 IME：不注不拦
+    if (e.isComposing || e.keyCode === 229) return;
+    // 特殊键映射（Enter/Backspace/方向键/Tab…）；preventDefault 兼防
+    // Tab 把焦点踢出隐形输入框。可打印字符不再走 keydown 直通——由
+    // 隐形输入框的 input 事件统一发出（本机 IME 才能正常组合中文）
+    if (!ANDROID_KEYS[e.code]) return;
     e.preventDefault();
     sendInput({ t: 'key', action, code: ANDROID_KEYS[e.code] });
   };
   window.addEventListener('keydown', handler(0));
   window.addEventListener('keyup', handler(1));
+}
+
+/**
+ * 键盘接管：隐形输入框（#kbd-capture）保持焦点，本机输入法借此激活——
+ * 英文逐键上屏，中文组合（拼音候选）结束整串进安卓。
+ * 输入法组合期的中间 input 事件（isComposing=true）只更新缓冲不上发。
+ */
+function bindKbdCapture() {
+  const kbd = document.getElementById('kbd-capture');
+  if (!kbd) return;
+  let composing = false;
+
+  const flush = () => {
+    const v = kbd.value;
+    if (!v) return;
+    kbd.value = '';
+    sendInput({ t: 'text', text: v });
+  };
+  // compositionend 与最终 input 事件的先后 WebKit 各版本有差异：
+  // 两边都挂 flush，value 清空后另一个自然空转，恰好一次
+  kbd.addEventListener('compositionstart', () => { composing = true; });
+  kbd.addEventListener('compositionend', () => { composing = false; flush(); });
+  kbd.addEventListener('input', () => { if (!composing) flush(); });
+
+  // 焦点保持：点击画面/切回窗口后把焦点收回输入框（窗口失活时绝不抢焦点）
+  const refocus = () => kbd.focus({ preventScroll: true });
+  els.canvas.addEventListener('pointerdown', refocus);
+  window.addEventListener('focus', refocus);
+  kbd.addEventListener('blur', () => {
+    if (document.hasFocus()) setTimeout(refocus, 0);
+  });
+  refocus();
 }
 
 /** 尺寸记忆：恢复在窗口启动时由主窗口创建参数完成；此处只负责保存 */
@@ -314,9 +381,13 @@ async function startScreen() {
 
 export function initScreenWindow() {
   const tauri = window.__TAURI__;
+  // screen-card 的 hidden 属性必须归位：screen-window 的 CSS display:block
+  // 只让画面"看着"可见，keydown 门控读的是 DOM 状态（M6 实测：不归位则键盘全灭）
+  els.card.hidden = false;
   bindClose();
   bindPointer();
   bindKeys();
+  bindKbdCapture();
   bindSizeMemory();
   restoreSize();
   els.btnStop.addEventListener('click', async () => {

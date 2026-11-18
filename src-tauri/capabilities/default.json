@@ -4,18 +4,20 @@
   "description": "主窗口与投屏窗口的默认权限：窗口创建/聚焦/全屏/尺寸，事件监听，以及全部 app 自定义命令（Tauri v2 ACL 默认拒绝未列出的命令）",
   "windows": [
     "main",
-    "screen-*"
+    "screen-*",
+    "settings-main"
   ],
   "permissions": [
+    "autostart:allow-disable",
+    "autostart:allow-enable",
+    "autostart:allow-is-enabled",
     "core:default",
     "core:webview:allow-create-webview-window",
+    "core:window:allow-destroy",
+    "core:window:allow-set-focus",
     "core:window:allow-set-fullscreen",
     "core:window:allow-set-size",
-    "core:window:allow-set-focus",
-    "core:window:allow-destroy",
     "deep-link:default",
-    "autostart:allow-enable",
-    "autostart:allow-disable",
-    "autostart:allow-is-enabled"
+    "dialog:allow-open"
   ]
 }

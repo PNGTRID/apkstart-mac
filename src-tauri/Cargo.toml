@@ -3,17 +3,24 @@ name = "apkstart-mac"
 version = "0.1.0"
 description = "apkstart macOS 版：双击 APK 即装，应用以独立窗口运行"
 edition = "2021"
+# 双 bin（主程序 + m2ctl），tauri bundler 靠此字段认主二进制
+default-run = "apkstart-mac"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "fs", "sync", "time", "net", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+rmcp = { version = "3.11", features = ["server", "macros", "transport-streamable-http-server", "client", "transport-streamable-http-client-reqwest"] }
+# MCP 传输挂载层：rmcp 的 StreamableHttpService 是裸 tower Service，需 axum 承载
+# （组合与 rmcp 官方测试一致：nest_service("/mcp", service) + axum::serve）
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }

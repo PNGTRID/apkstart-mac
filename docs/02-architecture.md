@@ -72,8 +72,8 @@ Rust 层职责边界：文件 I/O、外部进程、网络下载、MCP 服务；�
 
 - 目标：壳安装包 ~20MB（Tauri 2 + 系统 WebView，无 Chromium）
 - 首启下载运行时整包（~1.2GB）；下载页展示进度与源选择
-- **签名 + 公证必做**（Developer ID），否则 Gatekeeper 拦截；依赖用户是否有 Apple Developer 账号（见 AGENTS.md「请你补充」）
-- 更新：Tauri updater 插件，程序目录与数据目录分离保证更新安全
+- 签名（2026-11-18 拍板）：**无 Apple Developer 账号 → ad-hoc 签名 DMG**，无公证，Gatekeeper 首启手动放行（README 有中文引导）；分发渠道 GitHub Release
+- 更新：Tauri updater **推迟**（ad-hoc 签名下不可用），待有账号再启；程序目录与数据目录分离已为更新留好结构
 
 ## 7. 明确不做
 
