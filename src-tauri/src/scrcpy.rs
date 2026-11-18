@@ -176,7 +176,7 @@ fn build_control(v: &serde_json::Value) -> Option<Vec<u8>> {
             let pressed = action == 0 || action == 2;
             b.push(2u8);
             b.push(action);
-            b.extend_from_slice(&u64::MAX.to_be_bytes()); // pointerId: 鼠标 = -1
+            b.extend_from_slice(&0u64.to_be_bytes()); // pointerId = 0（-1 部分安卓版本注入无效）
             b.extend_from_slice(&x.to_be_bytes());
             b.extend_from_slice(&y.to_be_bytes());
             b.extend_from_slice(&w.to_be_bytes());

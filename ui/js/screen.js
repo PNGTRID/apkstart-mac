@@ -26,6 +26,7 @@ let decoder = null;
 let configured = false;
 let frameCount = 0;
 let active = false;
+let retries = 0;
 
 const ANDROID_KEYS = {
   Backspace: 67, Delete: 112, Enter: 66, Tab: 61, Escape: 4, Home: 3,
@@ -196,7 +197,7 @@ function sendInput(obj) {
 function bindPointer() {
   let pressed = false;
   els.canvas.addEventListener('pointerdown', (e) => {
-    els.canvas.setPointerCapture(e.pointerId);
+    try { els.canvas.setPointerCapture(e.pointerId); } catch (_) { /* capture 失败不阻断注入 */ }
     pressed = true;
     sendInput({ t: 'touch', action: 0, ...toVideoCoords(e) });
   });
@@ -289,6 +290,7 @@ async function startScreen() {
   els.canvas.width = info.width;
   els.canvas.height = info.height;
   configured = false;
+  retries = 0;
   setChip('连接中…');
 
   ws = new WebSocket(`ws://127.0.0.1:${info.ws_port}`);
@@ -299,8 +301,14 @@ async function startScreen() {
   };
   ws.onerror = () => setChip('WS 错误');
   ws.onclose = () => {
-    setChip('投屏已断开');
+    setChip('连接断开');
     active = false;
+    // 自动重连（模拟器重启/会话意外断开场景），最多 5 次
+    if (retries < 5) {
+      retries += 1;
+      setChip(`连接断开，${retries * 2}s 后自动重连（第 ${retries}/5 次）`);
+      setTimeout(() => startScreen(), retries * 2000);
+    }
   };
 }
 
